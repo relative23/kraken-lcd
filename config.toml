@@ -1,0 +1,54 @@
+# kraken-lcd configuration
+# Search order: --config <path>  >  /etc/kraken-lcd/config.toml  >  this file.
+# After changes: sudo systemctl restart kraken-lcd
+
+[carousel]
+display_seconds = 10        # per-tile display time (safety floor: 5)
+brightness = 100            # LCD brightness applied at startup (0-100)
+# Available tiles: liquid, cpu, gpu, temps, ram, nvme, pump, fan
+# Order = display order; omit a tile to disable it.
+screens = ["liquid", "cpu", "gpu", "temps"]
+
+[render]
+size = 0                    # 0 = auto-detect the LCD resolution from the device
+max_frames = 30             # frame cap per GIF (smaller = more stable uploads)
+colors = 64                 # palette size (smaller file = safer upload)
+font_scale = 1.0            # scale all text (0.5-3.0), e.g. 1.2 = 20% larger
+assets_dir = "assets"       # background GIFs (relative to the install dir)
+
+[cache]
+dir = "/var/cache/kraken-lcd"
+max_megabytes = 50          # above this: oldest entries are pruned (LRU)
+round_temp_to = 2           # bucket temperatures to N degC (display + cache)
+round_load_to = 5           # bucket utilization to N % (display + cache)
+round_rpm_to = 50           # bucket rpm values to N (display + cache)
+
+[device]
+max_upload_megabytes = 4    # hard limit; larger GIFs are never uploaded
+upload_retries = 2
+image_memory_megabytes = 6  # clear the device image memory proactively before
+                            # this many MB have been uploaded (prevents the
+                            # firmware from rejecting uploads)
+driver_patch = true         # patched KrakenZ3 driver: verified bucket setup +
+                            # flash-free cleanup (false = stock liquidctl)
+
+# -- pump / fan control (optional) ------------------------------------------
+# Commented out = the firmware default curve stays active. Curves are stored
+# in the device and keep working even when this service is stopped.
+# Points are [liquid degC, duty %], strictly increasing temperatures.
+#
+# [cooling]
+# pump = [[30, 50], [36, 70], [40, 100]]
+# fan  = [[30, 30], [36, 50], [40, 100]]
+
+# -- per-tile appearance (optional) -----------------------------------------
+# Override per tile: label, background (file in assets/), color ("#RRGGBB"),
+# label_y / value_y (vertical position 0.05-0.95), colors / max_frames
+# (file-size tuning). The temps tile uses left_label / right_label.
+#
+# [screens.cpu]
+# label = "CPU"
+# color = "#7FDBFF"
+# [screens.temps]
+# left_label = "CPU"
+# right_label = "GPU"

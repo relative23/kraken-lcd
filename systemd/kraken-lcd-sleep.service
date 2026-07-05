@@ -1,0 +1,17 @@
+[Unit]
+Description=kraken-lcd suspend/resume cycling
+# Standard sleep-hook pattern: before sleeping, stop the service (which
+# hands the LCD back to the firmware screen and closes the USB connection
+# cleanly). After resume this unit becomes unneeded and ExecStop starts
+# the service fresh.
+Before=sleep.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/systemctl stop kraken-lcd.service
+ExecStop=/usr/bin/systemctl start kraken-lcd.service
+
+[Install]
+WantedBy=sleep.target

@@ -1,0 +1,174 @@
+"""Command line interface: run / status / render / reset."""
+
+import argparse
+import logging
+import os
+import sys
+from dataclasses import replace
+from pathlib import Path
+
+from . import __version__
+from .cache import RenderCache
+from .carousel import DEFAULT_RENDER_SIZE, Carousel
+from .config import Config, ConfigError, load_config
+from .device import (EXIT_BOOTLOADER, DeviceError, DeviceInBootloader,
+                     DeviceStatus, KrakenDevice)
+from .render import render_gif
+from .screens import build_screens, effective_render_config
+from .sensors import SensorReader
+
+log = logging.getLogger("kraken_lcd")
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+SYSTEM_CONFIG = Path("/etc/kraken-lcd/config.toml")
+
+
+def _setup_logging(verbose: bool) -> None:
+    fmt = "%(levelname)-7s %(name)s: %(message)s"
+    if not os.environ.get("INVOCATION_ID"):  # journald adds its own timestamps
+        fmt = "%(asctime)s " + fmt
+    logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO, format=fmt)
+
+
+def _load(args: argparse.Namespace) -> Config:
+    """Config search order: --config > /etc/kraken-lcd/ > <project>/config.toml."""
+    if args.config:
+        path = Path(args.config).resolve()
+    elif SYSTEM_CONFIG.is_file():
+        path = SYSTEM_CONFIG
+    else:
+        path = None  # load_config falls back to BASE_DIR/config.toml, then defaults
+    return load_config(path, BASE_DIR)
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    cfg = _load(args)
+    cache = RenderCache(cfg.cache.dir, int(cfg.cache.max_megabytes * 2**20))
+    carousel = Carousel(cfg, KrakenDevice(cfg.device), SensorReader(), cache)
+    carousel.install_signal_handlers()
+    try:
+        carousel.run()
+    except DeviceInBootloader as exc:
+        log.critical("%s", exc)
+        return EXIT_BOOTLOADER
+    except DeviceError as exc:
+        log.error("%s", exc)
+        return 1
+    except Exception:
+        # last resort: a readable log line instead of a bare traceback
+        # (systemd restarts us; a bootloader is then detected on reconnect)
+        log.exception("unexpected error, shutting down")
+        return 1
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    cfg = _load(args)
+    device = KrakenDevice(cfg.device)
+    description = "not reachable"
+    status = DeviceStatus()
+    try:
+        device.connect()
+        description = device.description
+        status = device.read_status()
+    except DeviceError as exc:
+        log.warning("%s", exc)
+    finally:
+        device.disconnect()
+    snap = SensorReader().snapshot(liquid_temp=status.liquid_temp,
+                                   pump_rpm=status.pump_rpm,
+                                   fan_rpm=status.fan_rpm)
+
+    def fmt(value, unit: str) -> str:
+        return f"{value:.1f} {unit}" if value is not None else "n/a"
+
+    print(f"Device:      {description}")
+    print(f"Liquid temp: {fmt(snap.liquid_temp, '°C')}")
+    print(f"Pump speed:  {snap.pump_rpm if snap.pump_rpm is not None else 'n/a'} rpm")
+    print(f"Fan speed:   {snap.fan_rpm if snap.fan_rpm is not None else 'n/a'} rpm")
+    print(f"CPU load:    {fmt(snap.cpu_load, '%')}")
+    print(f"CPU temp:    {fmt(snap.cpu_temp, '°C')}")
+    print(f"GPU load:    {fmt(snap.gpu_load, '%')}")
+    print(f"GPU temp:    {fmt(snap.gpu_temp, '°C')}")
+    print(f"RAM usage:   {fmt(snap.ram_percent, '%')}")
+    print(f"NVMe temp:   {fmt(snap.nvme_temp, '°C')}")
+    return 0
+
+
+def cmd_render(args: argparse.Namespace) -> int:
+    """Render all tiles to a folder without touching the device."""
+    cfg = _load(args)
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    snap = SensorReader().snapshot(liquid_temp=args.liquid)
+    screens = build_screens(cfg.screen_styles)
+    base_render = cfg.render
+    if base_render.size == 0:  # auto-detect needs a device; use the default
+        base_render = replace(base_render, size=DEFAULT_RENDER_SIZE)
+        print(f"render size: {DEFAULT_RENDER_SIZE} px (auto-detect needs a "
+              f"connected device; set render.size to override)")
+    rendered = 0
+    for name in cfg.carousel.screens:
+        screen = screens[name]
+        elements = screen.build(snap, cfg.cache)
+        if elements is None:
+            print(f"{name}: skipped (required sensor unavailable"
+                  + (", use --liquid for the liquid tile)" if name == "liquid" else ")"))
+            continue
+        out = out_dir / f"{name}.gif"
+        budget = int(cfg.device.max_upload_megabytes * 1024 * 1024)
+        render_gif(cfg.assets_dir / screen.background, elements, out,
+                   effective_render_config(screen, base_render), budget_bytes=budget)
+        print(f"{name}: {out} ({out.stat().st_size / 2**20:.2f} MB)")
+        rendered += 1
+    return 0 if rendered else 1
+
+
+def cmd_reset(args: argparse.Namespace) -> int:
+    cfg = _load(args)
+    device = KrakenDevice(cfg.device)
+    try:
+        device.connect()
+        device.reset_to_liquid()
+    except DeviceInBootloader as exc:
+        log.critical("%s", exc)
+        return EXIT_BOOTLOADER
+    except DeviceError as exc:
+        log.error("%s", exc)
+        return 1
+    finally:
+        device.disconnect()
+    print("LCD reset to the built-in liquid temperature screen.")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="kraken-lcd",
+        description="Live system stats on NZXT Kraken LCD coolers")
+    parser.add_argument("--config", help="path to config.toml")
+    parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+    parser.add_argument("--version", action="version",
+                        version=f"%(prog)s {__version__}")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("run", help="run the carousel daemon").set_defaults(func=cmd_run)
+    sub.add_parser("status", help="print sensor and device status").set_defaults(func=cmd_status)
+    p_render = sub.add_parser("render", help="render tiles to disk (device untouched)")
+    p_render.add_argument("--out", default="preview",
+                          help="output directory (default: ./preview)")
+    p_render.add_argument("--liquid", type=float, default=None,
+                          help="fake liquid temperature so the liquid tile renders")
+    p_render.set_defaults(func=cmd_render)
+    sub.add_parser("reset", help="hand the LCD back to the firmware liquid screen"
+                   ).set_defaults(func=cmd_reset)
+    args = parser.parse_args(argv)
+    _setup_logging(args.verbose)
+    try:
+        return args.func(args)
+    except ConfigError as exc:
+        log.error("configuration error: %s", exc)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

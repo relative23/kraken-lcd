@@ -1,0 +1,16 @@
+# Device access for the kraken-lcd service user (see kraken-lcd.service).
+# Both node types are required: hidraw for status/commands, usb for the
+# bulk endpoint used by image uploads.
+#
+# NZXT Kraken Z53/Z63/Z73 (1e71:3008)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="3008", MODE="0660", GROUP="kraken-lcd"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="3008", MODE="0660", GROUP="kraken-lcd"
+# NZXT Kraken 2023 Elite (1e71:300c)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="300c", MODE="0660", GROUP="kraken-lcd"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="300c", MODE="0660", GROUP="kraken-lcd"
+# NZXT Kraken 2023 (1e71:300e)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="300e", MODE="0660", GROUP="kraken-lcd"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="300e", MODE="0660", GROUP="kraken-lcd"
+# NZXT Kraken 2024 Elite RGB (1e71:3012)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="3012", MODE="0660", GROUP="kraken-lcd"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="3012", MODE="0660", GROUP="kraken-lcd"

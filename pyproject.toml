@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kraken-lcd"
+version = "1.0.0"
+description = "Live system stats on NZXT Kraken LCD coolers: rotating tiles with animated backgrounds, safe uploads, pump/fan curves"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+dependencies = [
+    "liquidctl>=1.13",
+    "Pillow>=9",
+    "psutil>=5",
+]
+
+[project.urls]
+Homepage = "https://github.com/relativesharp/kraken-lcd"
+Issues = "https://github.com/relativesharp/kraken-lcd/issues"
+Changelog = "https://github.com/relativesharp/kraken-lcd/blob/main/CHANGELOG.md"
+
+[project.scripts]
+kraken-lcd = "kraken_lcd.cli:main"
+
+[tool.setuptools]
+packages = ["kraken_lcd"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

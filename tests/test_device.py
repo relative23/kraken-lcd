@@ -1,0 +1,280 @@
+import logging
+
+import pytest
+
+from kraken_lcd.config import DeviceConfig
+from kraken_lcd.device import (DeviceInBootloader, DeviceNotFound, DeviceStatus,
+                               KrakenDevice)
+
+_liquidctl_log = logging.getLogger("liquidctl.driver.kraken3")
+
+
+class FakeDriver:
+    description = "Fake NZXT Kraken"
+
+    def __init__(self):
+        self.calls = []
+        self.fixed_speeds = []
+        self.profiles = []
+        self.fail_next = 0     # raise an exception on the next N uploads
+        self.reject_next = 0   # firmware-style rejection: log ERROR, no raise
+        self.garbage_reads = 0  # deliver implausible status for the next N reads
+        self.cleanups = 0
+        self.connected = False
+        self.liquid_temp = 33.7
+
+    def connect(self):
+        self.connected = True
+
+    def disconnect(self):
+        self.connected = False
+
+    def initialize(self):
+        pass
+
+    def get_status(self):
+        liquid = self.liquid_temp
+        if self.garbage_reads > 0:
+            self.garbage_reads -= 1
+            liquid = 2.0
+        return [("Liquid temperature", liquid, "°C"),
+                ("Pump speed", 1866, "rpm"),
+                ("Fan speed", 914, "rpm")]
+
+    def set_screen(self, channel, mode, value):
+        if self.fail_next > 0:
+            self.fail_next -= 1
+            raise OSError("simulated usb error")
+        if self.reject_next > 0:
+            self.reject_next -= 1
+            _liquidctl_log.error("Failed to setup bucket for data transfer")
+            return
+        self.calls.append((channel, mode, value))
+
+    def set_fixed_speed(self, channel, duty):
+        self.fixed_speeds.append((channel, duty))
+
+    def set_speed_profile(self, channel, profile):
+        self.profiles.append((channel, list(profile)))
+
+    def _delete_all_buckets(self):
+        self.cleanups += 1
+
+
+class FakePatchedDriver(FakeDriver):
+    """Like the patched driver: offers a flash-free soft clear."""
+
+    def __init__(self):
+        super().__init__()
+        self.soft_clears = 0
+
+    def soft_clear_inactive(self):
+        self.soft_clears += 1
+
+
+def _device(monkeypatch, cfg: DeviceConfig | None = None, driver=None):
+    driver = driver or FakeDriver()
+    dev = KrakenDevice(cfg or DeviceConfig(), finder=lambda: driver)
+    monkeypatch.setattr("kraken_lcd.device.time.sleep", lambda s: None)
+    # tests must not depend on what is on this machine's USB bus
+    monkeypatch.setattr("kraken_lcd.device._bootloader_present", lambda: False)
+    dev.connect()
+    return dev, driver
+
+
+@pytest.fixture
+def device(monkeypatch):
+    return _device(monkeypatch)
+
+
+def _gif(tmp_path, megabytes=0.001, name="tile.gif"):
+    path = tmp_path / name
+    path.write_bytes(b"x" * int(megabytes * 1024 * 1024))
+    return path
+
+
+def test_upload_success(device, tmp_path):
+    dev, driver = device
+    assert dev.show_gif(_gif(tmp_path)) is True
+    assert driver.calls[-1][:2] == ("lcd", "gif")
+
+
+def test_size_guard_blocks_oversized_upload(device, tmp_path):
+    dev, driver = device
+    assert dev.show_gif(_gif(tmp_path, megabytes=5)) is False
+    assert driver.calls == []  # the device was never touched
+
+
+def test_retry_recovers_from_transient_error(device, tmp_path):
+    dev, driver = device
+    driver.fail_next = 1
+    assert dev.show_gif(_gif(tmp_path)) is True
+    assert driver.connected  # reconnect happened
+
+
+def test_gives_up_after_all_retries(device, tmp_path):
+    dev, driver = device
+    driver.fail_next = 99
+    assert dev.show_gif(_gif(tmp_path)) is False
+
+
+def test_firmware_rejection_triggers_cleanup_then_succeeds(device, tmp_path):
+    dev, driver = device
+    driver.reject_next = 1
+    assert dev.show_gif(_gif(tmp_path)) is True
+    assert driver.cleanups == 1  # image memory was cleared between attempts
+
+
+def test_persistent_firmware_rejection_returns_false(device, tmp_path):
+    dev, driver = device
+    driver.reject_next = 99
+    assert dev.show_gif(_gif(tmp_path)) is False
+
+
+def test_proactive_cleanup_before_memory_overflows(monkeypatch, tmp_path):
+    # budget of ~1.5 KB, uploads of ~1 KB: the second upload must trigger a
+    # proactive cleanup instead of running into a firmware rejection
+    cfg = DeviceConfig(image_memory_megabytes=0.0015)
+    dev, driver = _device(monkeypatch, cfg)
+    assert dev.show_gif(_gif(tmp_path, name="a.gif")) is True
+    assert driver.cleanups == 0
+    assert dev.show_gif(_gif(tmp_path, name="b.gif")) is True
+    assert driver.cleanups == 1
+    assert len(driver.calls) == 2  # both uploads reached the device exactly once
+
+
+def test_proactive_cleanup_prefers_flash_free_soft_clear(monkeypatch, tmp_path):
+    cfg = DeviceConfig(image_memory_megabytes=0.0015)
+    dev, driver = _device(monkeypatch, cfg, driver=FakePatchedDriver())
+    assert dev.show_gif(_gif(tmp_path, name="a.gif")) is True
+    assert dev.show_gif(_gif(tmp_path, name="b.gif")) is True
+    assert driver.soft_clears == 1
+    assert driver.cleanups == 0  # never the visible full clear
+
+
+def test_soft_clear_keeps_active_bucket_on_the_books(monkeypatch, tmp_path):
+    # after a soft clear the displayed bucket still occupies memory, so the
+    # accounting must not reset to zero
+    dev, driver = _device(monkeypatch, driver=FakePatchedDriver())
+    assert dev.show_gif(_gif(tmp_path, megabytes=0.002)) is True
+    dev.clear_image_memory()
+    assert dev._bytes_since_cleanup == int(0.002 * 1024 * 1024)
+
+
+def test_firmware_rejection_uses_full_clear(monkeypatch, tmp_path):
+    # a real refusal means the memory state is suspect: full clear, not soft
+    dev, driver = _device(monkeypatch, driver=FakePatchedDriver())
+    driver.reject_next = 1
+    assert dev.show_gif(_gif(tmp_path)) is True
+    assert driver.cleanups == 1
+    assert driver.soft_clears == 0
+
+
+def test_bucket_setup_refused_is_treated_as_rejection(monkeypatch, tmp_path):
+    from kraken_lcd.driver_patch import BucketSetupRefused
+    dev, driver = _device(monkeypatch, driver=FakePatchedDriver())
+    original = driver.set_screen
+    state = {"raised": False}
+
+    def refusing_set_screen(channel, mode, value):
+        if not state["raised"]:
+            state["raised"] = True
+            raise BucketSetupRefused("device refused the bucket setup twice")
+        original(channel, mode, value)
+
+    driver.set_screen = refusing_set_screen
+    assert dev.show_gif(_gif(tmp_path)) is True  # cleared fully + retried
+    assert driver.cleanups == 1
+
+
+def test_read_status_parses_all_values(device):
+    dev, _ = device
+    assert dev.read_status() == DeviceStatus(liquid_temp=33.7,
+                                             pump_rpm=1866, fan_rpm=914)
+
+
+def test_read_status_retries_past_garbage_readings(device):
+    dev, driver = device
+    driver.garbage_reads = 2  # connect() already consumed one flush read
+    status = dev.read_status(attempts=3)
+    assert status.liquid_temp == 33.7
+
+
+def test_implausible_liquid_temperature_filtered(device):
+    dev, driver = device
+    driver.garbage_reads = 99
+    assert dev.read_status(attempts=2).liquid_temp is None
+    driver.garbage_reads = 0
+    driver.liquid_temp = 130.0
+    assert dev.read_status(attempts=1).liquid_temp is None
+
+
+def test_apply_cooling_fixed_and_curve(device):
+    dev, driver = device
+    dev.apply_cooling(pump=60, fan=((30.0, 30), (40.0, 100)))
+    assert driver.fixed_speeds == [("pump", 60)]
+    assert driver.profiles == [("fan", [(30.0, 30), (40.0, 100)])]
+
+
+def test_apply_cooling_none_leaves_firmware_defaults(device):
+    dev, driver = device
+    dev.apply_cooling(pump=None, fan=None)
+    assert driver.fixed_speeds == [] and driver.profiles == []
+
+
+def test_apply_cooling_survives_driver_errors(device):
+    dev, driver = device
+
+    def boom(channel, duty):
+        raise OSError("firmware said no")
+
+    driver.set_fixed_speed = boom
+    dev.apply_cooling(pump=60, fan=None)  # must not raise
+
+
+def test_brightness_and_reset(device):
+    dev, driver = device
+    dev.set_brightness(80)
+    dev.reset_to_liquid()
+    assert ("lcd", "brightness", "80") in driver.calls
+    assert ("lcd", "liquid", None) in driver.calls
+
+
+def test_device_not_found(monkeypatch):
+    monkeypatch.setattr("kraken_lcd.device._bootloader_present", lambda: False)
+    dev = KrakenDevice(DeviceConfig(), finder=lambda: None)
+    with pytest.raises(DeviceNotFound):
+        dev.connect()
+
+
+def test_crashing_discovery_with_bootloader_on_bus(monkeypatch):
+    # liquidctl enumeration crashes with ValueError while a 1e71:3011
+    # bootloader device is present (observed live 2026-07-05)
+    calls = iter([False, True])  # absent pre-check, present after the crash
+    monkeypatch.setattr("kraken_lcd.device._bootloader_present",
+                        lambda: next(calls))
+
+    def crashing_finder():
+        raise ValueError("The device has no langid")
+
+    dev = KrakenDevice(DeviceConfig(), finder=crashing_finder)
+    with pytest.raises(DeviceInBootloader):
+        dev.connect()
+
+
+def test_crashing_discovery_without_bootloader(monkeypatch):
+    monkeypatch.setattr("kraken_lcd.device._bootloader_present", lambda: False)
+
+    def crashing_finder():
+        raise ValueError("hidapi hiccup")
+
+    dev = KrakenDevice(DeviceConfig(), finder=crashing_finder)
+    with pytest.raises(DeviceNotFound):
+        dev.connect()
+
+
+def test_bootloader_detected(monkeypatch):
+    monkeypatch.setattr("kraken_lcd.device._bootloader_present", lambda: True)
+    dev = KrakenDevice(DeviceConfig(), finder=lambda: None)
+    with pytest.raises(DeviceInBootloader):
+        dev.connect()
