@@ -16,9 +16,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/relativesharp/kraken-lcd"
-Issues = "https://github.com/relativesharp/kraken-lcd/issues"
-Changelog = "https://github.com/relativesharp/kraken-lcd/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/relative23/kraken-lcd"
+Issues = "https://github.com/relative23/kraken-lcd/issues"
+Changelog = "https://github.com/relative23/kraken-lcd/blob/main/CHANGELOG.md"
 
 [project.scripts]
 kraken-lcd = "kraken_lcd.cli:main"

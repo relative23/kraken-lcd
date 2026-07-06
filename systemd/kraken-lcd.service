@@ -1,6 +1,6 @@
 [Unit]
 Description=kraken-lcd — live system stats on NZXT Kraken LCD coolers
-Documentation=https://github.com/relativesharp/kraken-lcd
+Documentation=https://github.com/relative23/kraken-lcd
 # Never run concurrently with other owners of the same USB device
 Conflicts=coolercontrold.service
 # Never hammer a wedged device with restart attempts

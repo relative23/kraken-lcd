@@ -1,6 +1,6 @@
 # kraken-lcd
 
-[![CI](https://github.com/relativesharp/kraken-lcd/actions/workflows/ci.yml/badge.svg)](https://github.com/relativesharp/kraken-lcd/actions/workflows/ci.yml)
+[![CI](https://github.com/relative23/kraken-lcd/actions/workflows/ci.yml/badge.svg)](https://github.com/relative23/kraken-lcd/actions/workflows/ci.yml)
 
 Live system stats on the LCD of NZXT Kraken liquid coolers — as a rotating
 carousel of tiles with animated backgrounds, or as a single always-on
@@ -62,7 +62,7 @@ at the same time.
 ## Installation
 
 ```bash
-git clone https://github.com/relativesharp/kraken-lcd.git
+git clone https://github.com/relative23/kraken-lcd.git
 cd kraken-lcd
 sudo ./install.sh
 ```
