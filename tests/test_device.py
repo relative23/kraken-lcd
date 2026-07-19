@@ -209,6 +209,65 @@ def test_implausible_liquid_temperature_filtered(device):
     assert dev.read_status(attempts=1).liquid_temp is None
 
 
+def _count_connects(driver):
+    connects = []
+    original = driver.connect
+    driver.connect = lambda: connects.append(1) or original()
+    return connects
+
+
+def test_status_failures_force_reconnect_before_upload(device, tmp_path):
+    # transport down for one full read_status(), then recovered: the next
+    # upload must reconnect first instead of streaming right away
+    dev, driver = device
+    original = driver.get_status
+
+    def broken_status():
+        raise OSError("usb transport down")
+
+    driver.get_status = broken_status
+    assert dev.read_status().liquid_temp is None  # 3 consecutive errors
+    driver.get_status = original
+    connects = _count_connects(driver)
+    assert dev.show_gif(_gif(tmp_path)) is True
+    assert connects == [1]
+
+
+def test_status_failures_reconnect_detects_bootloader(monkeypatch, tmp_path):
+    # the reconnect forced by the breaker must notice a device that fell
+    # into its bootloader — and nothing may be streamed before that
+    dev, driver = _device(monkeypatch)
+
+    def broken_status():
+        raise OSError("usb transport down")
+
+    driver.get_status = broken_status
+    dev.read_status()
+    monkeypatch.setattr("kraken_lcd.device._bootloader_present", lambda: True)
+    with pytest.raises(DeviceInBootloader):
+        dev.show_gif(_gif(tmp_path))
+    assert driver.calls == []  # no upload reached the sick device
+
+
+def test_recovered_status_read_resets_the_breaker(device, tmp_path):
+    # 2 errors, then a good read: no reconnect on the next upload
+    dev, driver = device
+    original = driver.get_status
+    state = {"fail": 2}
+
+    def flaky_status():
+        if state["fail"]:
+            state["fail"] -= 1
+            raise OSError("hiccup")
+        return original()
+
+    driver.get_status = flaky_status
+    assert dev.read_status().liquid_temp == 33.7
+    connects = _count_connects(driver)
+    assert dev.show_gif(_gif(tmp_path)) is True
+    assert connects == []
+
+
 def test_apply_cooling_fixed_and_curve(device):
     dev, driver = device
     dev.apply_cooling(pump=60, fan=((30.0, 30), (40.0, 100)))

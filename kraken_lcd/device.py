@@ -99,6 +99,10 @@ class KrakenDevice:
     PLAUSIBLE_LIQUID_RANGE = (5.0, 90.0)  # °C; reads after init can be garbage
     PLAUSIBLE_RPM_RANGE = (0, 10_000)
     STATUS_RETRY_DELAY = 0.5  # seconds between retries on implausible reads
+    # circuit breaker: this many consecutive status-read *errors* (one full
+    # read_status() worth) mark the transport as sick — reconnect before the
+    # next upload instead of streaming megabytes into an unresponsive device
+    MAX_STATUS_FAILURES = 3
 
     def __init__(self, cfg: DeviceConfig, finder=None) -> None:
         self._cfg = cfg
@@ -107,6 +111,7 @@ class KrakenDevice:
         self._last_upload = 0.0
         self._bytes_since_cleanup = 0
         self._last_upload_size = 0
+        self._status_failures = 0
 
     @property
     def description(self) -> str:
@@ -151,6 +156,7 @@ class KrakenDevice:
             driver.get_status()  # first read after init is often bogus; discard
         except Exception as exc:
             log.warning("initialize() failed, continuing anyway: %s", exc)
+        self._status_failures = 0
         log.info("connected to %s", driver.description)
 
     def disconnect(self) -> None:
@@ -204,7 +210,10 @@ class KrakenDevice:
                 elif "fan speed" in label:
                     fan = self._plausible_rpm(value)
         except Exception as exc:
+            self._status_failures += 1
             log.warning("reading device status failed: %s", exc)
+        else:
+            self._status_failures = 0
         return DeviceStatus(liquid_temp=liquid, pump_rpm=pump, fan_rpm=fan)
 
     def _plausible_rpm(self, value) -> int | None:
@@ -271,6 +280,14 @@ class KrakenDevice:
             log.error("refusing to upload %s: %.1f MB exceeds the %.1f MB safety "
                       "limit", path.name, size / 2**20, self._cfg.max_upload_megabytes)
             return False
+
+        # circuit breaker: a device whose status endpoint stopped answering
+        # must not be fed another multi-megabyte stream — reconnect first,
+        # which also notices a device that fell into its bootloader
+        if self._status_failures >= self.MAX_STATUS_FAILURES:
+            log.warning("%d consecutive status read failures — reconnecting "
+                        "before the next upload", self._status_failures)
+            self._reconnect()  # DeviceNotFound/-InBootloader propagate
 
         # proactive: clear the image memory *before* the device would start
         # rejecting uploads (reactive recovery below stays as a safety net)

@@ -5,7 +5,7 @@ from kraken_lcd.config import MIN_DISPLAY_SECONDS, ConfigError, load_config
 
 def test_defaults_without_config_file(tmp_path):
     cfg = load_config(None, tmp_path)
-    assert cfg.carousel.display_seconds == 10
+    assert cfg.carousel.display_seconds == 20
     assert cfg.carousel.brightness == 100
     assert cfg.carousel.screens == ("liquid", "cpu", "gpu", "temps")
     assert cfg.render.size == 0  # 0 = auto-detect from the device

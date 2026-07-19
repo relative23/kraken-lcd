@@ -24,7 +24,9 @@ daemon on top of [liquidctl](https://github.com/liquidctl/liquidctl).
   from this project). kraken-lcd ships a patched upload path that verifies
   the bucket setup first, absorbs sporadic firmware refusals invisibly,
   manages the device's image memory proactively, enforces a size budget
-  with adaptive frame thinning, and paces uploads.
+  with adaptive frame thinning, and paces uploads. When the device stops
+  answering status reads, uploads are held back until a reconnect
+  succeeds — a sick device is never fed more data.
 - **Pump/fan curves** (optional): a `[liquid °C → duty %]` curve written to
   the device firmware — it keeps regulating even with the daemon stopped.
 - **Robust as a service:** systemd watchdog, dedicated unprivileged user,
@@ -134,7 +136,7 @@ kernel driver; without either the tile is skipped silently.
 ## Development
 
 ```bash
-python3 -m pytest      # 156 tests, no hardware required
+python3 -m pytest      # 160 tests, no hardware required
 ```
 
 Firmware behavior notes (bucket protocol, bootloader wedge) are in

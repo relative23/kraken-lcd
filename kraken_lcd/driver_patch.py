@@ -35,8 +35,6 @@ import math
 
 log = logging.getLogger(__name__)
 
-_BUCKET_COUNT = 16
-
 # marker of the known-broken upstream error handling; if it disappears,
 # upstream changed (or fixed) _send_data and this patch must stand down
 _STOCK_MARKER = "Failed to setup bucket for data transfer"
@@ -94,13 +92,20 @@ def patched_driver_class():
             self._active_bucket = None
 
         def soft_clear_inactive(self) -> None:
-            """Delete every bucket except the one currently displayed.
+            """Delete every occupied bucket except the one displayed.
 
             Frees the image memory without switching the LCD to the liquid
-            view, i.e. without any visible flash.
+            view, i.e. without any visible flash. The bucket table is
+            queried first (read-only) so that only occupied buckets get a
+            state-mutating delete command — the firmware's delete handler
+            is exactly where the sporadic refusals live, so it is not
+            poked for buckets that are already empty.
             """
-            for index in range(_BUCKET_COUNT):
-                if index != self._active_bucket:
+            buckets = self._query_buckets()
+            for index, info in buckets.items():
+                # occupancy convention as in _find_next_unoccupied_bucket:
+                # bytes 15+ are all zero for an unoccupied bucket
+                if index != self._active_bucket and any(info[15:]):
                     self._delete_bucket(index)
 
         def _send_data(self, data, bulkInfo):

@@ -4,4 +4,4 @@ Renders live sensor values onto animated GIF backgrounds and shows them
 on the LCD of NZXT Kraken Z / 2023 / Elite coolers via liquidctl.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

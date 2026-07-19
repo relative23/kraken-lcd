@@ -176,7 +176,8 @@ def test_explicit_config_beats_system_config(monkeypatch, tmp_path):
 
 
 def test_version_flag(capsys):
+    from kraken_lcd import __version__
     with pytest.raises(SystemExit) as excinfo:
         cli.main(["--version"])
     assert excinfo.value.code == 0
-    assert "1.0.0" in capsys.readouterr().out
+    assert __version__ in capsys.readouterr().out

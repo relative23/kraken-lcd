@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] – 2026-07-20
+
+Hardening release after a field incident (2026-07-19): a 2024 Elite RGB
+crashed into its bootloader (USB `1e71:3011`) after ~2 h of normal carousel
+operation — the firmware had refused roughly every 9th bucket setup before
+dying. All existing safeguards worked (bootloader detection, exit code 78,
+restart suppression); this release reduces the load that provoked the
+firmware in the first place and stops feeding data to a device that has
+already become unresponsive.
+
+### Added
+
+- Transport health circuit breaker: after one full `read_status()` worth of
+  consecutive transport errors, the daemon reconnects (which also detects a
+  bootloader) *before* the next upload instead of streaming megabytes into
+  an unresponsive device.
+
+### Changed
+
+- Default `carousel.display_seconds` raised from 10 to 20, halving the
+  upload cadence and the image-memory churn that stresses the 2024 Elite
+  firmware.
+- `soft_clear_inactive()` queries the bucket table first and deletes only
+  occupied buckets — routine memory housekeeping no longer sends
+  state-mutating delete commands for buckets that are already empty.
+
 ## [1.0.0] – 2026-07-06
 
 First public release.

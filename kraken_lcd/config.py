@@ -38,7 +38,10 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True)
 class CarouselConfig:
-    display_seconds: float = 10.0
+    # 20 s halves the upload/bucket churn compared to the old 10 s default;
+    # sustained 10 s cadence provoked sporadic bucket refusals and one
+    # firmware crash into the bootloader on a 2024 Elite (2026-07-19)
+    display_seconds: float = 20.0
     brightness: int = 100
     screens: tuple[str, ...] = ("liquid", "cpu", "gpu", "temps")
 
@@ -283,7 +286,7 @@ def load_config(path: Path | None, base_dir: Path) -> Config:
     brightness = _int(car, "brightness", 100, "carousel")
     _require(0 <= brightness <= 100, "carousel.brightness must be between 0 and 100")
 
-    display_seconds = _num(car, "display_seconds", 10.0, "carousel")
+    display_seconds = _num(car, "display_seconds", 20.0, "carousel")
     if display_seconds < MIN_DISPLAY_SECONDS:
         log.warning("carousel.display_seconds=%.1f is below the device safety "
                     "floor, using %.0f s", display_seconds, MIN_DISPLAY_SECONDS)

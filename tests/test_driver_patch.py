@@ -133,19 +133,25 @@ def test_second_upload_lands_after_the_first_bucket():
     assert int.from_bytes(bytes(offset), "little") == 4000
 
 
-def test_soft_clear_keeps_the_active_bucket():
-    h = _Harness()
+def test_soft_clear_deletes_only_occupied_inactive_buckets():
+    h = _Harness(occupied=((0, 0, 1000), (3, 1000, 500), (7, 1500, 500)))
     h.driver._active_bucket = 3
     h.driver.soft_clear_inactive()
-    assert len(h.deleted) == 15
-    assert 3 not in h.deleted
+    assert h.deleted == [0, 7]  # active kept, empty buckets never touched
 
 
-def test_soft_clear_without_active_bucket_deletes_everything():
+def test_soft_clear_without_active_bucket_deletes_all_occupied():
+    h = _Harness(occupied=((1, 0, 1000), (5, 1000, 500)))
+    h.driver._active_bucket = None
+    h.driver.soft_clear_inactive()
+    assert h.deleted == [1, 5]
+
+
+def test_soft_clear_on_empty_memory_sends_no_delete_commands():
     h = _Harness()
     h.driver._active_bucket = None
     h.driver.soft_clear_inactive()
-    assert h.deleted == list(range(16))
+    assert h.deleted == []
 
 
 def test_real_switch_bucket_tracks_the_active_bucket():
