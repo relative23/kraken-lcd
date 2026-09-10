@@ -1,6 +1,6 @@
 """A patched KrakenZ3 driver with 2024-Elite-safe bucket handling.
 
-Stock liquidctl (verified in 1.15.0 and in upstream main as of 2026-07)
+Stock liquidctl (verified in 1.14.0 through 1.16.0 and in upstream main as of 2026-09)
 has two weaknesses in ``KrakenZ3._send_data`` that show on the 2024 Elite:
 
 1. When the firmware refuses the bucket setup — which the 2024 Elite does
@@ -19,32 +19,26 @@ has two weaknesses in ``KrakenZ3._send_data`` that show on the 2024 Elite:
    → ``soft_clear_inactive()`` does exactly that; the active bucket is
    tracked through ``_switch_bucket``.
 
-The patch is deliberately defensive: it only activates when the installed
-liquidctl still contains the known-broken code path (checked by source
-inspection). On any mismatch — e.g. a future liquidctl release that fixes
-or reworks ``_send_data`` — ``patched_driver_class()`` raises and the
-caller falls back to the stock driver.
+The patch is deliberately defensive. It touches private liquidctl API,
+which may change in any release, so it only activates when every internal
+it depends on is exactly the code it was written against — checked by
+signature and by a fingerprint of the method body, see
+``kraken_lcd.upstream``. On any mismatch (a future liquidctl release that
+fixes or reworks ``_send_data``, a version too old to have the 2023/2024
+models, a build without source) ``patched_driver_class()`` raises and the
+caller falls back to the stock driver. ``kraken-lcd doctor`` shows the
+verdict and its reasons.
 
-An upstream contribution based on this analysis is drafted in
+The upstream fix that would make this patch unnecessary is drafted in
 ``docs/UPSTREAM.md``.
 """
 
-import inspect
 import logging
 import math
 
+from . import upstream
+
 log = logging.getLogger(__name__)
-
-# marker of the known-broken upstream error handling; if it disappears,
-# upstream changed (or fixed) _send_data and this patch must stand down
-_STOCK_MARKER = "Failed to setup bucket for data transfer"
-
-_REQUIRED_INTERNALS = (
-    "_write", "_write_then_read", "_bulk_write", "_query_buckets",
-    "_find_next_unoccupied_bucket", "_prepare_bucket",
-    "_get_bucket_memory_offset", "_setup_bucket", "_switch_bucket",
-    "_delete_bucket", "_delete_all_buckets",
-)
 
 
 class BucketSetupRefused(Exception):
@@ -58,26 +52,29 @@ _patched_cls = None
 def patched_driver_class():
     """Build (once) and return the patched KrakenZ3 subclass.
 
-    Raises when the installed liquidctl does not look like the version this
-    patch was written against — callers must then use the stock driver.
+    Raises RuntimeError (with the reasons) when the installed liquidctl
+    does not satisfy the upstream contract — callers must then use the
+    stock driver.
     """
     global _patched_cls
     if _patched_cls is not None:
         return _patched_cls
 
-    from liquidctl.driver.kraken3 import KrakenZ3
+    compatibility = upstream.installed()
+    if not compatibility.compatible:
+        raise RuntimeError(compatibility.summary())
+    log.info("driver patch active: %s", compatibility.summary())
 
-    for name in _REQUIRED_INTERNALS:
-        if not hasattr(KrakenZ3, name):
-            raise RuntimeError(f"KrakenZ3.{name} is gone — liquidctl changed")
-    if _STOCK_MARKER not in inspect.getsource(KrakenZ3._send_data):
-        raise RuntimeError("KrakenZ3._send_data changed upstream — "
-                           "the bucket bug may already be fixed there")
+    from liquidctl.driver.kraken3 import KrakenZ3
 
     class PatchedKrakenZ3(KrakenZ3):
         """KrakenZ3 with verified bucket setup and flash-free cleanup."""
 
         _active_bucket: int | None = None
+        # set by _send_data; read by the device layer's upload monitor to
+        # track how often the firmware balks (recovered refusals are
+        # otherwise invisible above this class)
+        last_upload_refused: bool = False
 
         def _switch_bucket(self, bucketIndex, mode=0x4):
             ok = super()._switch_bucket(bucketIndex, mode)
@@ -109,10 +106,11 @@ def patched_driver_class():
                     self._delete_bucket(index)
 
         def _send_data(self, data, bulkInfo):
-            # Reimplementation of KrakenZ3._send_data (liquidctl 1.15.0),
+            # Reimplementation of KrakenZ3._send_data (liquidctl 1.14.0-1.16.0, fingerprinted in kraken_lcd.upstream),
             # byte-identical protocol, but with verified bucket setup —
             # see the module docstring for the rationale.
             assert self.bulk_device, "Cannot find bulk out device"
+            self.last_upload_refused = False
 
             self._write_then_read([0x36, 0x03])
 
@@ -137,6 +135,7 @@ def patched_driver_class():
                                       bucketMemoryStart, dataSizeBytes):
                 # 2024 Elite firmware refuses sporadically even with free
                 # memory; clear everything and retry once from offset 0
+                self.last_upload_refused = True
                 log.info("bucket setup refused, clearing image memory and retrying")
                 self._delete_all_buckets()
                 bucketIndex = 0
@@ -169,10 +168,11 @@ def find_patched_kraken():
     """
     cls = patched_driver_class()
     from liquidctl import find_liquidctl_devices
+    from liquidctl.driver.kraken3 import KrakenZ3
     for candidate in find_liquidctl_devices():
         if ("kraken" in candidate.description.lower()
                 and hasattr(candidate, "set_screen")):
-            if type(candidate) is not cls.__mro__[1]:  # not exactly KrakenZ3
+            if type(candidate) is not KrakenZ3:  # a subclass is not verified
                 raise RuntimeError(
                     f"unexpected driver class {type(candidate).__name__}")
             candidate.__class__ = cls

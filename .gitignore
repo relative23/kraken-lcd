@@ -5,3 +5,6 @@ preview/
 build/
 dist/
 *.egg-info/
+.idea/
+.venv/
+.ruff_cache/

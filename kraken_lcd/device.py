@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import DeviceConfig, SpeedSetting
+from .monitor import UploadMonitor
 
 log = logging.getLogger(__name__)
 
@@ -25,9 +26,20 @@ BOOTLOADER_RECOVERY = (
     "A plain reboot is NOT enough — the device keeps standby power."
 )
 
-# systemd catches this via RestartPreventExitStatus so a wedged device is
-# never hammered with restart attempts.
-EXIT_BOOTLOADER = 78
+# Exit status for conditions a restart cannot fix (device in its bootloader,
+# firmware that cannot show GIFs): the systemd unit lists it in
+# RestartPreventExitStatus so the service is not hammered with retries.
+EXIT_NO_RESTART = 78
+EXIT_BOOTLOADER = EXIT_NO_RESTART  # historical name
+
+# supported product IDs and the liquidctl release that introduced them
+SUPPORTED_PRODUCTS = {
+    0x3008: ("Kraken Z53/Z63/Z73", "1.13"),
+    0x300C: ("Kraken 2023 Elite", "1.14"),
+    0x300E: ("Kraken 2023", "1.14"),
+    0x3012: ("Kraken 2024 Elite RGB", "1.15"),
+    0x3014: ("Kraken 2024 Plus", "1.16"),
+}
 
 
 class DeviceError(Exception):
@@ -40,6 +52,12 @@ class DeviceNotFound(DeviceError):
 
 class DeviceInBootloader(DeviceError):
     pass
+
+
+class DeviceUnsupported(DeviceError):
+    """The device or its firmware cannot do what the daemon needs (e.g. the
+    Kraken 2023 on firmware 2.x cannot show GIFs through liquidctl).
+    Retrying or restarting will not change that."""
 
 
 @dataclass(frozen=True)
@@ -57,16 +75,46 @@ def _find_stock_kraken():
     return None
 
 
+_patch_fallback_logged = False
+
+
 def _find_kraken(use_patch: bool = True):
+    global _patch_fallback_logged
     if use_patch:
         from .driver_patch import find_patched_kraken
         try:
             return find_patched_kraken()
         except RuntimeError as exc:
-            log.warning("driver patch disabled itself (%s) — using the stock "
-                        "driver; occasional LCD flashes on bucket cleanup "
-                        "are possible", exc)
+            # once per process, not on every reconnect
+            level = logging.DEBUG if _patch_fallback_logged else logging.WARNING
+            _patch_fallback_logged = True
+            log.log(level, "driver patch disabled itself — using the stock "
+                    "driver: uploads are no longer verified before streaming "
+                    "and memory cleanup briefly flashes the LCD. Reason: %s "
+                    "(details: kraken-lcd doctor)", exc)
     return _find_stock_kraken()
+
+
+def _unsupported_errors() -> tuple[type[Exception], ...]:
+    """liquidctl's 'this device/firmware cannot do that' exception types."""
+    try:
+        import liquidctl.error as errors
+    except Exception:
+        return ()
+    return tuple(cls for cls in (getattr(errors, "NotSupportedByDriver", None),
+                                 getattr(errors, "NotSupportedByDevice", None))
+                 if isinstance(cls, type))
+
+
+def _firmware_version(status) -> str | None:
+    """Extract the firmware version from an initialize()/get_status() list."""
+    try:
+        for name, value, _unit in status or ():
+            if "firmware" in str(name).lower():
+                return str(value)
+    except (TypeError, ValueError):
+        pass
+    return None
 
 
 def _bootloader_present() -> bool:
@@ -81,9 +129,12 @@ def _bootloader_present() -> bool:
 class _DriverErrorWatcher(logging.Handler):
     """Collects ERROR records from liquidctl during one operation.
 
-    The KrakenZ3 driver does not raise on firmware-level upload failures
-    ("Failed to setup bucket ..."), it only logs them — this is the only
-    reliable way to notice that an upload did not reach the screen.
+    Stock-driver fallback: the stock KrakenZ3 does not raise on
+    firmware-level upload failures ("Failed to setup bucket ..."), it only
+    logs them, so scraping the log is the only way to notice that an
+    upload did not reach the screen. The patched driver raises
+    ``BucketSetupRefused`` instead, which ``_try_upload`` maps onto the
+    same error list — the rest of the device layer is driver-agnostic.
     """
 
     def __init__(self) -> None:
@@ -104,7 +155,7 @@ class KrakenDevice:
     # next upload instead of streaming megabytes into an unresponsive device
     MAX_STATUS_FAILURES = 3
 
-    def __init__(self, cfg: DeviceConfig, finder=None) -> None:
+    def __init__(self, cfg: DeviceConfig, finder=None, monitor=None) -> None:
         self._cfg = cfg
         self._finder = finder or (lambda: _find_kraken(cfg.driver_patch))
         self._driver = None
@@ -112,10 +163,23 @@ class KrakenDevice:
         self._bytes_since_cleanup = 0
         self._last_upload_size = 0
         self._status_failures = 0
+        self._monitor = monitor or UploadMonitor()
+        self._firmware: str | None = None
 
     @property
     def description(self) -> str:
         return self._driver.description if self._driver else "not connected"
+
+    @property
+    def firmware_version(self) -> str | None:
+        """Firmware version reported by the device at connect, if any."""
+        return self._firmware
+
+    @property
+    def driver_class(self) -> str:
+        """Name of the liquidctl driver class in use (PatchedKrakenZ3 or
+        the stock KrakenZ3); 'none' while disconnected."""
+        return type(self._driver).__name__ if self._driver else "none"
 
     @property
     def lcd_resolution(self) -> tuple[int, int] | None:
@@ -147,17 +211,21 @@ class KrakenDevice:
         if driver is None:
             if _bootloader_present():
                 raise DeviceInBootloader(BOOTLOADER_RECOVERY)
+            supported = ", ".join(f"1e71:{pid:04x} ({name}, liquidctl >= {since})"
+                                  for pid, (name, since) in SUPPORTED_PRODUCTS.items())
             raise DeviceNotFound(
-                "no NZXT Kraken with an LCD found (expected USB 1e71:3012)")
+                f"no NZXT Kraken with an LCD found; supported: {supported} — "
+                f"check `lsusb | grep 1e71` and `kraken-lcd doctor`")
         driver.connect()
         self._driver = driver
         try:
-            driver.initialize()
+            self._firmware = _firmware_version(driver.initialize())
             driver.get_status()  # first read after init is often bogus; discard
         except Exception as exc:
             log.warning("initialize() failed, continuing anyway: %s", exc)
         self._status_failures = 0
-        log.info("connected to %s", driver.description)
+        log.info("connected to %s (firmware %s, driver %s)", driver.description,
+                 self._firmware or "unknown", self.driver_class)
 
     def disconnect(self) -> None:
         if self._driver is None:
@@ -299,19 +367,25 @@ class KrakenDevice:
 
         self._pace()
         retries = self._cfg.upload_retries
+        refusals = 0
         for attempt in range(1, retries + 1):
             try:
                 device_errors = self._try_upload(path)
+            except DeviceError:
+                raise  # unsupported firmware: retrying cannot help
             except Exception as exc:
+                refusals += self._took_refusal()
                 log.warning("upload attempt %d/%d failed: %s", attempt, retries, exc)
                 if attempt < retries:
                     self._reconnect()  # DeviceNotFound/-InBootloader propagate
                     time.sleep(1.0)
                 continue
+            refusals += self._took_refusal()
             if not device_errors:
                 self._last_upload = time.monotonic()
                 self._bytes_since_cleanup += size
                 self._last_upload_size = size
+                self._monitor.record(succeeded=True, refusals=refusals)
                 return True
             log.warning("upload attempt %d/%d rejected by the device: %s",
                         attempt, retries, "; ".join(device_errors))
@@ -319,7 +393,20 @@ class KrakenDevice:
                 self.clear_image_memory(full=True)
                 time.sleep(1.0)
         self._last_upload = time.monotonic()
+        self._monitor.record(succeeded=False, refusals=refusals)
         return False
+
+    def _took_refusal(self) -> int:
+        """1 if the just-finished attempt triggered a firmware bucket refusal.
+
+        The patched driver recovers a single refusal invisibly (retry at
+        offset 0); reading its flag is the only way to count how often the
+        firmware balks. Read before any reconnect swaps the driver out."""
+        return int(bool(getattr(self._driver, "last_upload_refused", False)))
+
+    def flush_upload_stats(self) -> None:
+        """Log the pending upload-health summary (called on shutdown)."""
+        self._monitor.flush()
 
     def _try_upload(self, path: Path) -> list[str]:
         """One upload attempt; returns firmware errors the driver only logged."""
@@ -332,6 +419,12 @@ class KrakenDevice:
         except BucketSetupRefused as exc:
             # the patched driver aborted before streaming any data
             watcher.errors.append(str(exc))
+        except _unsupported_errors() as exc:
+            # e.g. Kraken 2023 on firmware 2.x: liquidctl cannot upload GIFs
+            # (liquidctl #631); no retry, reconnect or restart will fix this
+            raise DeviceUnsupported(
+                f"{self.description} (firmware {self._firmware or 'unknown'}) "
+                f"cannot show GIFs through liquidctl: {exc}") from exc
         finally:
             liquidctl_logger.removeHandler(watcher)
         return watcher.errors

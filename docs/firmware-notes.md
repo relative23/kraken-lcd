@@ -18,9 +18,11 @@ switch the active bucket.
   uploads, non-deterministically — occasionally directly after a full
   clear. Treat a refused setup as a hard stop: clear the image memory,
   retry once from offset 0, and abort if refused again.
-- **Never stream after a refused setup.** Stock liquidctl (≤ 1.16) only
-  logs the refusal and streams anyway; under a periodic upload workload
-  this wedged our device into its bootloader twice.
+- **Never stream after a refused setup.** Stock liquidctl (every release
+  up to 1.16.0 and `main` as of 2026-09) only logs the refusal and
+  streams anyway; under a periodic upload workload this wedged our
+  device into its bootloader twice. The proposed upstream fix is in
+  [UPSTREAM.md](UPSTREAM.md).
 - **Cleanup without flashing:** `_delete_all_buckets()` switches the LCD
   to the firmware liquid view first (visible flash). Deleting every bucket
   *except* the currently displayed one frees the memory with no visible

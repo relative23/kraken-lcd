@@ -1,5 +1,4 @@
-from kraken_lcd.config import (KNOWN_SCREENS, CacheConfig, RenderConfig,
-                               ScreenStyle)
+from kraken_lcd.config import KNOWN_SCREENS, CacheConfig, RenderConfig, ScreenStyle
 from kraken_lcd.screens import SCREENS, build_screens, cache_key
 from kraken_lcd.sensors import SensorSnapshot
 

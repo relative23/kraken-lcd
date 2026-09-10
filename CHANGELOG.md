@@ -4,6 +4,64 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] – 2026-09-11
+
+The dependency on liquidctl's private driver internals — the project's
+most fragile part — is now an explicit, tested contract instead of a
+one-string heuristic, and the tooling to keep it that way ships with the
+project.
+
+### Added
+
+- `kraken_lcd.upstream`: the contract behind the driver patch. Every
+  `KrakenZ3` internal the patch calls, overrides or reimplements is listed
+  with its signature and a fingerprint of its logic (token stream without
+  comments, docstring and formatting; stable across Python versions). The
+  patch activates only when all of them match; otherwise it stands down
+  with the exact reasons. `python -m kraken_lcd.upstream` prints the
+  fingerprints of the installed liquidctl for auditing a new release.
+- `kraken-lcd doctor`: compatibility and device report for bug reports
+  and CI — liquidctl version, patch verdict with reasons, device,
+  firmware version, LCD resolution, driver class, status (exit code 3
+  when the patch cannot activate; `--no-device` for CI).
+- Upload-health summary: one journal line per hour with uploads, firmware
+  bucket refusals (including the ones the patched driver recovers
+  invisibly) and failures; flushed on shutdown so the last stretch before
+  a device wedge is captured. `journalctl -u kraken-lcd | grep 'upload health'`.
+- Firmware version and driver class are logged at connect.
+- `DeviceUnsupported` (exit code 78, no restart): a Kraken 2023 on
+  firmware 2.x cannot show GIFs through liquidctl (liquidctl #631); this
+  used to end in a retry/reconnect/restart loop.
+- NZXT Kraken 2024 Plus (`1e71:3014`, liquidctl ≥ 1.16) in the udev rule
+  and the device table.
+- CI: matrix over liquidctl 1.14.0 / 1.15.0 / 1.16.0 on Python 3.11–3.14,
+  a clean-fallback check on 1.13.0, a weekly canary against liquidctl
+  `main`, and `ruff` linting.
+- `docs/liquidctl-compatibility.md` (contract, compatibility matrix,
+  release procedure, exit strategy) and `docs/UPSTREAM.md` with the
+  proposed liquidctl fix as a ready-to-apply patch — it passes liquidctl's
+  own Kraken tests.
+- Issue templates for device test reports and bug reports.
+- Distribution-neutral installation: the README lists the packages for
+  Arch, Fedora, Debian/Ubuntu, Alpine, NixOS and Gentoo plus a virtualenv
+  route for distributions without a liquidctl package; `install.sh`
+  accepts `--python <interpreter>`, checks that the interpreter can
+  import liquidctl, Pillow and psutil before installing anything, and
+  finds `nologin` wherever the distribution keeps it.
+
+### Fixed
+
+- On liquidctl 1.13.0 (Ubuntu 24.04) the driver patch activated although
+  that driver has neither `bulk_buffer_size` nor the same upload code;
+  the first real upload would have failed with an `AttributeError`. The
+  contract stands the patch down there.
+- The "no device found" message named only the 2024 Elite's USB ID; it
+  now lists every supported model with the liquidctl release it needs.
+- The patch-fallback warning was repeated on every reconnect; it is
+  logged once per process now.
+- `docs/UPSTREAM.md`, referenced from the driver patch since 1.0.0, did
+  not exist.
+
 ## [1.1.0] – 2026-07-20
 
 Hardening release after a field incident (2026-07-19): a 2024 Elite RGB

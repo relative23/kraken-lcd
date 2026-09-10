@@ -1,0 +1,106 @@
+From f7c098793181840e44f674b553f55356f4b662db Mon Sep 17 00:00:00 2001
+From: relativesharp <relativesharp@gmail.com>
+Date: Thu, 10 Sep 2026 20:11:59 +0200
+Subject: [PATCH] kraken3: abort the upload when the device refuses the bucket
+ setup
+
+KrakenZ3._send_data only logged a refused bucket setup and then streamed
+the whole image into the bulk endpoint anyway. The transfer cannot land
+anywhere, the bucket switch fails afterwards and the caller never learns
+that the image did not reach the screen.
+
+Worse, on the Kraken 2024 Elite (which refuses the setup sporadically
+even with free image memory) doing that under a periodic upload workload
+has wedged devices into their bootloader (USB 1e71:3011), recoverable
+only by cutting standby power (#774).
+
+Raise ExpectationNotMet before any bulk data is sent instead. The bucket
+switch failure keeps its log line: at that point nothing more is streamed.
+
+Closes #774
+---
+ CHANGELOG.md                |  7 +++++++
+ liquidctl/driver/kraken3.py |  9 ++++++---
+ tests/test_kraken3.py       | 14 ++++++++++++++
+ 3 files changed, 27 insertions(+), 3 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 190538c..78c82d7 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,12 @@
+ # Changelog
+ 
++## [Unreleased]
++
++Changed:
++
++- NZXT Kraken Z?3/2023/2024: abort an image upload when the device refuses
++  the bucket setup instead of streaming the image anyway (liquidctl#774)
++
+ ## [1.16.0] – 2026-03-03
+ 
+ ### Changes since 1.15.0
+diff --git a/liquidctl/driver/kraken3.py b/liquidctl/driver/kraken3.py
+index 8ef2767..fe18053 100644
+--- a/liquidctl/driver/kraken3.py
++++ b/liquidctl/driver/kraken3.py
+@@ -26,7 +26,7 @@ if sys.platform == "win32":
+     from winusbcdc import WinUsbPy
+ 
+ from liquidctl.driver.usb import PyUsbDevice, UsbHidDriver
+-from liquidctl.error import NotSupportedByDevice, NotSupportedByDriver
++from liquidctl.error import ExpectationNotMet, NotSupportedByDevice, NotSupportedByDriver
+ from liquidctl.util import (
+     LazyHexRepr,
+     normalize_profile,
+@@ -1021,9 +1021,12 @@ class KrakenZ3(KrakenX3):
+             bucketIndex = 0  # start from byte 0
+             bucketMemoryStart = [0x0, 0x0]
+ 
+-        # setup bucket for transfer
++        # setup bucket for transfer; the device refuses this sporadically
++        # (observed on the 2024 Elite even with free memory), and streaming
++        # the image regardless has wedged devices into their bootloader
++        # (see issue #774), so abort before any bulk data is sent
+         if not self._setup_bucket(bucketIndex, bucketIndex + 1, bucketMemoryStart, dataSizeBytes):
+-            _LOGGER.error("Failed to setup bucket for data transfer")
++            raise ExpectationNotMet("device refused the bucket setup, image not sent")
+ 
+         self._write_then_read([0x36, 0x01, bucketIndex])  # start data transfer
+         self._bulk_write(header)
+diff --git a/tests/test_kraken3.py b/tests/test_kraken3.py
+index 006b31a..1e89511 100644
+--- a/tests/test_kraken3.py
++++ b/tests/test_kraken3.py
+@@ -6,6 +6,7 @@ import os
+ from _testutils import MockHidapiDevice, MockPyusbDevice, Report
+ 
+ from liquidctl.driver.hwmon import HwmonDevice
++from liquidctl.error import ExpectationNotMet
+ from liquidctl.driver.kraken3 import KrakenX3, KrakenZ3
+ from liquidctl.driver.kraken3 import (
+     _COLOR_CHANNELS_KRAKENX,
+@@ -551,6 +552,19 @@ def test_krakenz3_screen_not_totally_broken(mock_krakenz3):
+     )
+ 
+ 
++def test_krakenz3_refused_bucket_setup_aborts_before_streaming(mock_krakenz3):
++    """A refused bucket setup must raise instead of streaming the image."""
++    mock_krakenz3.initialize()
++    mock_krakenz3._setup_bucket = lambda *args: False
++    with pytest.raises(ExpectationNotMet):
++        mock_krakenz3.set_screen(
++            "lcd",
++            "static",
++            os.path.join(os.path.dirname(os.path.abspath(__file__)), "yellow.jpg"),
++        )
++    assert mock_krakenz3.bulk_data_index == 0
++
++
+ @pytest.mark.skip("Currently broken with pillow >= 10.2.0 (see #661)")
+ def test_krakenz3_screen_not_totally_broken_part2(mock_krakenz3):
+     """Reasonable example calls to untested APIs do not raise exceptions."""
+-- 
+2.53.0
+

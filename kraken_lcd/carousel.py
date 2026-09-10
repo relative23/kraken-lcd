@@ -10,8 +10,7 @@ from .cache import RenderCache
 from .config import Config
 from .device import DeviceError, DeviceInBootloader, KrakenDevice
 from .render import render_gif
-from .screens import (Screen, build_screens, cache_key,
-                      effective_render_config)
+from .screens import Screen, build_screens, cache_key, effective_render_config
 from .sdnotify import SystemdNotifier
 from .sensors import SensorReader
 
@@ -66,6 +65,7 @@ class Carousel:
             while not self._stop.is_set():
                 self._one_cycle()
         finally:
+            self._device.flush_upload_stats()
             self._device.reset_to_liquid()
             self._device.disconnect()
 

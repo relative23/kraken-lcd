@@ -3,8 +3,13 @@ import logging
 import pytest
 
 from kraken_lcd.config import DeviceConfig
-from kraken_lcd.device import (DeviceInBootloader, DeviceNotFound, DeviceStatus,
-                               KrakenDevice)
+from kraken_lcd.device import (
+    DeviceInBootloader,
+    DeviceNotFound,
+    DeviceStatus,
+    DeviceUnsupported,
+    KrakenDevice,
+)
 
 _liquidctl_log = logging.getLogger("liquidctl.driver.kraken3")
 
@@ -30,7 +35,7 @@ class FakeDriver:
         self.connected = False
 
     def initialize(self):
-        pass
+        return [("Firmware version", "2.3.1", ""), ("LCD", "on", "")]
 
     def get_status(self):
         liquid = self.liquid_temp
@@ -72,9 +77,25 @@ class FakePatchedDriver(FakeDriver):
         self.soft_clears += 1
 
 
-def _device(monkeypatch, cfg: DeviceConfig | None = None, driver=None):
+class RecordingMonitor:
+    """Captures every record()/flush() so tests can assert the wiring."""
+
+    def __init__(self):
+        self.records = []
+        self.flushes = 0
+
+    def record(self, *, succeeded, refusals):
+        self.records.append((succeeded, refusals))
+
+    def flush(self):
+        self.flushes += 1
+
+
+def _device(monkeypatch, cfg: DeviceConfig | None = None, driver=None,
+            monitor=None):
     driver = driver or FakeDriver()
-    dev = KrakenDevice(cfg or DeviceConfig(), finder=lambda: driver)
+    dev = KrakenDevice(cfg or DeviceConfig(), finder=lambda: driver,
+                       monitor=monitor)
     monkeypatch.setattr("kraken_lcd.device.time.sleep", lambda s: None)
     # tests must not depend on what is on this machine's USB bus
     monkeypatch.setattr("kraken_lcd.device._bootloader_present", lambda: False)
@@ -268,6 +289,52 @@ def test_recovered_status_read_resets_the_breaker(device, tmp_path):
     assert connects == []
 
 
+def test_monitor_records_successful_upload(monkeypatch, tmp_path):
+    mon = RecordingMonitor()
+    dev, _ = _device(monkeypatch, monitor=mon)
+    assert dev.show_gif(_gif(tmp_path)) is True
+    assert mon.records == [(True, 0)]
+
+
+def test_monitor_records_failed_upload(monkeypatch, tmp_path):
+    mon = RecordingMonitor()
+    dev, driver = _device(monkeypatch, monitor=mon)
+    driver.fail_next = 99
+    assert dev.show_gif(_gif(tmp_path)) is False
+    assert mon.records == [(False, 0)]
+
+
+def test_monitor_counts_a_firmware_bucket_refusal(monkeypatch, tmp_path):
+    # the patched driver exposes last_upload_refused; a recovered refusal
+    # must show up in the monitor even though the upload itself succeeded
+    mon = RecordingMonitor()
+    dev, driver = _device(monkeypatch, driver=FakePatchedDriver(), monitor=mon)
+    original = driver.set_screen
+
+    def refusing_then_ok(channel, mode, value):
+        driver.last_upload_refused = True  # firmware balked, driver recovered
+        original(channel, mode, value)
+
+    driver.set_screen = refusing_then_ok
+    assert dev.show_gif(_gif(tmp_path)) is True
+    assert mon.records == [(True, 1)]
+
+
+def test_monitor_not_recorded_for_oversized_upload(monkeypatch, tmp_path):
+    # the size guard never touches the device, so it is not an upload event
+    mon = RecordingMonitor()
+    dev, _ = _device(monkeypatch, monitor=mon)
+    assert dev.show_gif(_gif(tmp_path, megabytes=5)) is False
+    assert mon.records == []
+
+
+def test_flush_upload_stats_delegates_to_the_monitor(monkeypatch):
+    mon = RecordingMonitor()
+    dev, _ = _device(monkeypatch, monitor=mon)
+    dev.flush_upload_stats()
+    assert mon.flushes == 1
+
+
 def test_apply_cooling_fixed_and_curve(device):
     dev, driver = device
     dev.apply_cooling(pump=60, fan=((30.0, 30), (40.0, 100)))
@@ -337,3 +404,83 @@ def test_bootloader_detected(monkeypatch):
     dev = KrakenDevice(DeviceConfig(), finder=lambda: None)
     with pytest.raises(DeviceInBootloader):
         dev.connect()
+
+
+def test_firmware_version_and_driver_class_are_captured(device):
+    dev, _ = device
+    assert dev.firmware_version == "2.3.1"
+    assert dev.driver_class == "FakeDriver"
+    dev.disconnect()
+    assert dev.driver_class == "none"
+
+
+def test_firmware_version_survives_a_failing_initialize(monkeypatch):
+    driver = FakeDriver()
+
+    def broken_initialize():
+        raise OSError("init timeout")
+
+    driver.initialize = broken_initialize
+    dev, _ = _device(monkeypatch, driver=driver)
+    assert dev.firmware_version is None  # connected anyway (existing behaviour)
+
+
+def test_unsupported_firmware_is_not_retried(monkeypatch, tmp_path):
+    # Kraken 2023 on firmware 2.x: liquidctl raises NotSupportedByDriver for
+    # GIFs. That must surface as DeviceUnsupported immediately — no retry,
+    # no reconnect, no "3 consecutive failures" restart loop.
+    from liquidctl.error import NotSupportedByDriver
+    dev, driver = _device(monkeypatch)
+    attempts = []
+
+    def refusing(channel, mode, value):
+        attempts.append(mode)
+        raise NotSupportedByDriver("gif images are not supported on firmware 2.X.Y")
+
+    driver.set_screen = refusing
+    connects = _count_connects(driver)
+    with pytest.raises(DeviceUnsupported) as info:
+        dev.show_gif(_gif(tmp_path))
+    assert attempts == ["gif"]
+    assert connects == []
+    assert "firmware 2.3.1" in str(info.value)  # from the device, for the report
+    assert "cannot show GIFs" in str(info.value)
+
+
+def test_not_found_message_lists_supported_devices(monkeypatch):
+    monkeypatch.setattr("kraken_lcd.device._bootloader_present", lambda: False)
+    dev = KrakenDevice(DeviceConfig(), finder=lambda: None)
+    with pytest.raises(DeviceNotFound) as info:
+        dev.connect()
+    assert "1e71:3012" in str(info.value)
+    assert "1e71:3008" in str(info.value)
+
+
+def test_patch_fallback_is_logged_once(monkeypatch, caplog):
+    from kraken_lcd import device as device_mod
+
+    def incompatible():
+        raise RuntimeError("KrakenZ3._send_data changed upstream")
+
+    monkeypatch.setattr("kraken_lcd.driver_patch.find_patched_kraken", incompatible)
+    stock = FakeDriver()
+    monkeypatch.setattr(device_mod, "_find_stock_kraken", lambda: stock)
+    monkeypatch.setattr(device_mod, "_patch_fallback_logged", False)
+    with caplog.at_level(logging.DEBUG, logger="kraken_lcd.device"):
+        assert device_mod._find_kraken(use_patch=True) is stock
+        assert device_mod._find_kraken(use_patch=True) is stock
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "_send_data changed upstream" in warnings[0].getMessage()
+
+
+def test_patch_disabled_by_config_skips_the_patch(monkeypatch):
+    from kraken_lcd import device as device_mod
+    stock = FakeDriver()
+    monkeypatch.setattr(device_mod, "_find_stock_kraken", lambda: stock)
+
+    def must_not_be_called():
+        raise AssertionError("patch must not be consulted")
+
+    monkeypatch.setattr("kraken_lcd.driver_patch.find_patched_kraken", must_not_be_called)
+    assert device_mod._find_kraken(use_patch=False) is stock

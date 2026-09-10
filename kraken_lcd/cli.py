@@ -1,18 +1,25 @@
-"""Command line interface: run / status / render / reset."""
+"""Command line interface: run / status / render / reset / doctor."""
 
 import argparse
 import logging
 import os
+import platform
 import sys
 from dataclasses import replace
 from pathlib import Path
 
-from . import __version__
+from . import __version__, upstream
 from .cache import RenderCache
 from .carousel import DEFAULT_RENDER_SIZE, Carousel
 from .config import Config, ConfigError, load_config
-from .device import (EXIT_BOOTLOADER, DeviceError, DeviceInBootloader,
-                     DeviceStatus, KrakenDevice)
+from .device import (
+    EXIT_NO_RESTART,
+    DeviceError,
+    DeviceInBootloader,
+    DeviceStatus,
+    DeviceUnsupported,
+    KrakenDevice,
+)
 from .render import render_gif
 from .screens import build_screens, effective_render_config
 from .sensors import SensorReader
@@ -48,9 +55,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     carousel.install_signal_handlers()
     try:
         carousel.run()
-    except DeviceInBootloader as exc:
+    except (DeviceInBootloader, DeviceUnsupported) as exc:
+        # a restart cannot fix either; the unit does not retry exit code 78
         log.critical("%s", exc)
-        return EXIT_BOOTLOADER
+        return EXIT_NO_RESTART
     except DeviceError as exc:
         log.error("%s", exc)
         return 1
@@ -132,7 +140,7 @@ def cmd_reset(args: argparse.Namespace) -> int:
         device.reset_to_liquid()
     except DeviceInBootloader as exc:
         log.critical("%s", exc)
-        return EXIT_BOOTLOADER
+        return EXIT_NO_RESTART
     except DeviceError as exc:
         log.error("%s", exc)
         return 1
@@ -140,6 +148,71 @@ def cmd_reset(args: argparse.Namespace) -> int:
         device.disconnect()
     print("LCD reset to the built-in liquid temperature screen.")
     return 0
+
+
+# exit code of `doctor` when the driver patch cannot activate (the CI canary
+# against liquidctl main relies on it)
+EXIT_PATCH_INACTIVE = 3
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Compatibility and device report for bug reports and CI.
+
+    Exit codes: 0 all good, 3 driver patch inactive, 1 device requested but
+    not reachable, 78 device in its bootloader.
+    """
+    cfg = _load(args)
+    compat = upstream.installed()
+    try:
+        import liquidctl
+        where = Path(liquidctl.__file__).parent
+    except Exception:  # noqa: BLE001 - report, do not crash
+        where = "not importable"
+    print(f"kraken-lcd:    {__version__} (Python {platform.python_version()}, "
+          f"{platform.system()} {platform.release()})")
+    print(f"liquidctl:     {compat.liquidctl_version} ({where})")
+    if not cfg.device.driver_patch:
+        print("driver patch:  disabled in the configuration (device.driver_patch = false)")
+        code = 0
+    elif compat.compatible:
+        print(f"driver patch:  active ({compat.summary()})")
+        code = 0
+    else:
+        print(f"driver patch:  INACTIVE, the stock driver is used "
+              f"(liquidctl {compat.liquidctl_version}):")
+        for problem in compat.problems:
+            print(f"               - {problem}")
+        print("               see docs/liquidctl-compatibility.md")
+        code = EXIT_PATCH_INACTIVE
+    if args.no_device:
+        return code
+
+    device = KrakenDevice(cfg.device)
+    try:
+        device.connect()
+        resolution = device.lcd_resolution
+        lcd = f"{resolution[0]}x{resolution[1]}" if resolution else "unknown resolution"
+        print(f"device:        {device.description} (firmware "
+              f"{device.firmware_version or 'unknown'}, LCD {lcd})")
+        print(f"driver class:  {device.driver_class}")
+        status = device.read_status()
+        print(f"status:        liquid {_fmt(status.liquid_temp, '°C')}, "
+              f"pump {_fmt(status.pump_rpm, 'rpm')}, fan {_fmt(status.fan_rpm, 'rpm')}")
+    except DeviceInBootloader as exc:
+        print(f"device:        {exc}")
+        return EXIT_NO_RESTART
+    except DeviceError as exc:
+        print(f"device:        {exc}")
+        return code or 1
+    finally:
+        device.disconnect()
+    return code
+
+
+def _fmt(value, unit: str) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.1f} {unit}" if isinstance(value, float) else f"{value} {unit}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -161,6 +234,12 @@ def main(argv: list[str] | None = None) -> int:
     p_render.set_defaults(func=cmd_render)
     sub.add_parser("reset", help="hand the LCD back to the firmware liquid screen"
                    ).set_defaults(func=cmd_reset)
+    p_doctor = sub.add_parser(
+        "doctor", help="report liquidctl compatibility, driver patch status and "
+                       "the connected device (attach to bug reports)")
+    p_doctor.add_argument("--no-device", action="store_true",
+                          help="skip the USB part (compatibility check only)")
+    p_doctor.set_defaults(func=cmd_doctor)
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
     try:

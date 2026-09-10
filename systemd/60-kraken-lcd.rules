@@ -14,3 +14,6 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="300e", MODE="0660", 
 # NZXT Kraken 2024 Elite RGB (1e71:3012)
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="3012", MODE="0660", GROUP="kraken-lcd"
 SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="3012", MODE="0660", GROUP="kraken-lcd"
+# NZXT Kraken 2024 Plus (1e71:3014, liquidctl >= 1.16)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", ATTRS{idProduct}=="3014", MODE="0660", GROUP="kraken-lcd"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1e71", ATTR{idProduct}=="3014", MODE="0660", GROUP="kraken-lcd"

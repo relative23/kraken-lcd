@@ -4,14 +4,13 @@ resolution auto-detect, AMD GPU fallback, system config search order."""
 import psutil
 import pytest
 from PIL import Image
+from test_carousel import FakeDevice, _carousel
+from test_device import FakeDriver, _device
 
 from kraken_lcd import cli
 from kraken_lcd import sensors as sensors_mod
 from kraken_lcd.config import ConfigError, DeviceConfig, load_config
-from kraken_lcd.device import KrakenDevice
 from kraken_lcd.sensors import SensorReader
-from test_carousel import FakeDevice, _carousel
-from test_device import FakeDriver, _device
 
 
 @pytest.fixture
@@ -20,8 +19,7 @@ def cfg(tmp_path, tiny_gif):
     import shutil
     from pathlib import Path
 
-    from kraken_lcd.config import (CacheConfig, CarouselConfig, Config,
-                                   RenderConfig)
+    from kraken_lcd.config import CacheConfig, CarouselConfig, Config, RenderConfig
     for name in ("liquid.gif", "cpu.gif", "temp.gif"):
         shutil.copy(tiny_gif, tmp_path / name)
     return Config(

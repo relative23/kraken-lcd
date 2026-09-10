@@ -5,10 +5,8 @@ import pytest
 
 from kraken_lcd.cache import RenderCache
 from kraken_lcd.carousel import Carousel
-from kraken_lcd.config import (CacheConfig, CarouselConfig, Config,
-                               DeviceConfig, RenderConfig)
-from kraken_lcd.device import (DeviceError, DeviceInBootloader, DeviceNotFound,
-                               DeviceStatus)
+from kraken_lcd.config import CacheConfig, CarouselConfig, Config, DeviceConfig, RenderConfig
+from kraken_lcd.device import DeviceError, DeviceInBootloader, DeviceNotFound, DeviceStatus
 from kraken_lcd.sensors import SensorSnapshot
 
 
@@ -37,6 +35,9 @@ class FakeDevice:
 
     def reset_to_liquid(self):
         self.events.append("reset")
+
+    def flush_upload_stats(self):
+        self.events.append("flush")
 
     def clear_image_memory(self):
         self.cleanups += 1
@@ -148,7 +149,8 @@ def test_run_full_lifecycle_and_teardown(cfg):
     carousel.run()
     # setup order, then teardown even though we stopped mid-cycle
     assert device.events[:4] == ["connect", "clear", "cooling", "brightness"]
-    assert device.events[-2:] == ["reset", "disconnect"]
+    # the upload-health summary is flushed before the LCD is handed back
+    assert device.events[-3:] == ["flush", "reset", "disconnect"]
     assert device.cooling_applied == (None, None)
     assert notifier.ready_count == 1
     assert notifier.watchdog_count >= 1

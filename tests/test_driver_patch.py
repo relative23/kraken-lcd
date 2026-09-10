@@ -8,12 +8,13 @@ offsets) runs for real.
 
 import pytest
 
-from kraken_lcd.driver_patch import (BucketSetupRefused, find_patched_kraken,
-                                     patched_driver_class)
+from kraken_lcd.driver_patch import BucketSetupRefused, find_patched_kraken, patched_driver_class
 
-# The patch deliberately stands down on liquidctl versions it does not
-# recognize (source-marker guard). When that happens — e.g. after upstream
-# fixes the bucket handling — these tests are moot, not broken.
+# The patch deliberately stands down on liquidctl versions that do not
+# satisfy the upstream contract (kraken_lcd.upstream). When that happens —
+# e.g. after upstream fixes the bucket handling — these tests are moot, not
+# broken. test_upstream.py fails instead of skipping on releases we claim
+# to have verified.
 try:
     patched_driver_class()
 except RuntimeError as exc:
@@ -123,6 +124,26 @@ def test_failed_switch_raises():
         h.send()
 
 
+def test_clean_upload_leaves_the_refusal_flag_false():
+    h = _Harness()
+    h.send()
+    assert h.driver.last_upload_refused is False
+
+
+def test_recovered_refusal_sets_the_flag():
+    h = _Harness(setup_results=(False, True))
+    h.send()
+    assert h.driver.last_upload_refused is True
+
+
+def test_refusal_flag_is_reset_at_the_start_of_each_upload():
+    h = _Harness(setup_results=(False, True, True))
+    h.send()
+    assert h.driver.last_upload_refused is True
+    h.send()  # a clean second upload must clear the stale flag
+    assert h.driver.last_upload_refused is False
+
+
 def test_second_upload_lands_after_the_first_bucket():
     # bucket 0 holds 4000 KB at offset 0 -> the next upload must be placed
     # in bucket 1 at offset 4000
@@ -211,3 +232,26 @@ def test_find_patched_kraken_rejects_unknown_driver_classes(monkeypatch):
                         lambda **kw: iter([stranger]))
     with pytest.raises(RuntimeError):
         find_patched_kraken()
+
+
+def test_patch_refuses_to_build_on_an_incompatible_liquidctl(monkeypatch):
+    from kraken_lcd import driver_patch, upstream
+    monkeypatch.setattr(driver_patch, "_patched_cls", None)
+    monkeypatch.setattr(
+        upstream, "installed",
+        lambda: upstream.Compatibility("9.9.9", ("KrakenZ3._send_data changed upstream",)))
+    with pytest.raises(RuntimeError, match="_send_data changed upstream"):
+        driver_patch.patched_driver_class()
+    with pytest.raises(RuntimeError):
+        driver_patch.find_patched_kraken()  # never reaches the USB bus
+
+
+def test_patch_class_is_built_once(monkeypatch):
+    from kraken_lcd import driver_patch, upstream
+    monkeypatch.setattr(driver_patch, "_patched_cls", None)
+    calls = []
+    real = upstream.installed()
+    monkeypatch.setattr(upstream, "installed", lambda: calls.append(1) or real)
+    first = driver_patch.patched_driver_class()
+    assert driver_patch.patched_driver_class() is first
+    assert calls == [1]

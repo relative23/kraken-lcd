@@ -186,6 +186,15 @@ def _parse_fraction(section: dict, key: str, where: str) -> float | None:
     return float(value)
 
 
+def _optional_text(section: dict, key: str, where: str) -> str | None:
+    value = section.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{where}.{key} must be a non-empty string")
+    return value
+
+
 def _parse_screen_styles(data: dict) -> dict[str, ScreenStyle]:
     section = data.get("screens", {})
     if not isinstance(section, dict):
@@ -202,14 +211,6 @@ def _parse_screen_styles(data: dict) -> dict[str, ScreenStyle]:
             if key not in _SCREEN_STYLE_KEYS:
                 log.warning("config: unknown key %s.%s ignored", where, key)
 
-        def text(key: str) -> str | None:
-            value = entries.get(key)
-            if value is None:
-                return None
-            if not isinstance(value, str) or not value.strip():
-                raise ConfigError(f"{where}.{key} must be a non-empty string")
-            return value
-
         color = (_parse_color(entries["color"], where)
                  if "color" in entries else (255, 255, 255))
         tile_colors = None
@@ -223,13 +224,13 @@ def _parse_screen_styles(data: dict) -> dict[str, ScreenStyle]:
             _require(tile_max_frames >= 1,
                      f"{where}.max_frames must be at least 1")
         styles[name] = ScreenStyle(
-            label=text("label"),
-            background=text("background"),
+            label=_optional_text(entries, "label", where),
+            background=_optional_text(entries, "background", where),
             color=color,
             label_y=_parse_fraction(entries, "label_y", where),
             value_y=_parse_fraction(entries, "value_y", where),
-            left_label=text("left_label"),
-            right_label=text("right_label"),
+            left_label=_optional_text(entries, "left_label", where),
+            right_label=_optional_text(entries, "right_label", where),
             colors=tile_colors,
             max_frames=tile_max_frames,
         )

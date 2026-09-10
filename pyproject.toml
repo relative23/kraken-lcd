@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kraken-lcd"
-version = "1.1.0"
+version = "1.2.0"
 description = "Live system stats on NZXT Kraken LCD coolers: rotating tiles with animated backgrounds, safe uploads, pump/fan curves"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,3 +28,14 @@ packages = ["kraken_lcd"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "I"]
+ignore = ["E501"]  # long lines: comments and log messages are wrapped by hand
+
+[tool.ruff.lint.isort]
+known-first-party = ["kraken_lcd"]

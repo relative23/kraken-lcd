@@ -4,14 +4,27 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # weekly canary against liquidctl's main branch: a change to the
+    # KrakenZ3 internals the driver patch relies on shows up here first
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
 
 jobs:
   tests:
+    name: py${{ matrix.python-version }} / liquidctl ${{ matrix.liquidctl }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        # every release the driver patch is verified against
+        # (kraken_lcd.upstream.VERIFIED_RELEASES); 1.13.0 is what Ubuntu
+        # 24.04 ships and must degrade to the stock driver cleanly
+        liquidctl: ["1.14.0", "1.15.0", "1.16.0"]
+        include:
+          - python-version: "3.12"
+            liquidctl: "1.13.0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,7 +33,41 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install liquidctl pillow psutil pytest
+          pip install "liquidctl==${{ matrix.liquidctl }}" pillow psutil pytest
           sudo apt-get update && sudo apt-get install -y fonts-dejavu-core
+      - name: Driver patch compatibility
+        # informational on 1.13.0 (expected: stands down), enforced elsewhere
+        run: python -m kraken_lcd doctor --no-device || [ "${{ matrix.liquidctl }}" = "1.13.0" ]
       - name: Run test suite (no hardware required)
         run: python -m pytest -q
+
+  upstream-canary:
+    name: liquidctl main (canary)
+    runs-on: ubuntu-latest
+    # a red canary is a heads-up, not a broken build: the patch stands down
+    # by design when upstream changes (docs/liquidctl-compatibility.md)
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"  # the production platform (Ubuntu 26.04)
+      - name: Install liquidctl from git main
+        run: |
+          python -m pip install --upgrade pip
+          pip install "liquidctl @ git+https://github.com/liquidctl/liquidctl.git@main" pillow psutil pytest
+          sudo apt-get update && sudo apt-get install -y fonts-dejavu-core
+      - name: Fingerprints of the installed internals
+        run: python -m kraken_lcd.upstream
+      - name: Run test suite
+        run: python -m pytest -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .

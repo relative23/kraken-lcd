@@ -19,8 +19,9 @@ WorkingDirectory=/opt/kraken-lcd
 Environment=PYTHONDONTWRITEBYTECODE=1
 Restart=on-failure
 RestartSec=30
-# exit code 78 = device stuck in its bootloader: restarts are pointless,
-# recovery needs a power cycle (see README, troubleshooting)
+# exit code 78 = a restart cannot help: device stuck in its bootloader
+# (recovery needs a power cycle) or firmware that cannot show GIFs
+# (see README, troubleshooting)
 RestartPreventExitStatus=78
 # enough time to hand the LCD back to the firmware screen on stop
 TimeoutStopSec=25

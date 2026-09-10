@@ -4,9 +4,14 @@ import shutil
 
 import pytest
 
-from kraken_lcd import cli
-from kraken_lcd.device import (DeviceInBootloader, DeviceNotFound, DeviceStatus,
-                               KrakenDevice)
+from kraken_lcd import cli, upstream
+from kraken_lcd.device import (
+    DeviceInBootloader,
+    DeviceNotFound,
+    DeviceStatus,
+    DeviceUnsupported,
+    KrakenDevice,
+)
 
 
 @pytest.fixture
@@ -148,6 +153,13 @@ def test_run_returns_78_for_bootloader(project, fake_carousel):
     assert cli.main(["--config", str(project), "run"]) == 78
 
 
+def test_run_returns_78_for_unsupported_firmware(project, fake_carousel):
+    # a restart cannot fix a firmware that refuses GIFs; same no-restart
+    # exit status as the bootloader case
+    fake_carousel.exception = DeviceUnsupported("firmware 2.x cannot show GIFs")
+    assert cli.main(["--config", str(project), "run"]) == 78
+
+
 def test_run_returns_1_for_device_errors(project, fake_carousel):
     fake_carousel.exception = DeviceNotFound("gone")
     assert cli.main(["--config", str(project), "run"]) == 1
@@ -166,3 +178,70 @@ def test_default_finder_respects_driver_patch_config(monkeypatch):
     KrakenDevice(DeviceConfig(driver_patch=False))._finder()
     KrakenDevice(DeviceConfig(driver_patch=True))._finder()
     assert seen == [False, True]
+
+
+# ------------------------------------------------------------------ doctor
+
+_COMPATIBLE = upstream.Compatibility("1.15.0", (), verified_release=True)
+_INCOMPATIBLE = upstream.Compatibility(
+    "1.99.0", ("KrakenZ3._send_data changed upstream (fingerprint x, expected y)",))
+
+
+class _DoctorDevice(_UnreachableDevice):
+    description = "NZXT Kraken 2024 Elite RGB"
+    firmware_version = "2.3.1"
+    lcd_resolution = (640, 640)
+    driver_class = "PatchedKrakenZ3"
+
+    def connect(self):
+        pass
+
+    def read_status(self):
+        return DeviceStatus(liquid_temp=41.5, pump_rpm=1850, fan_rpm=900)
+
+
+def test_doctor_reports_an_active_patch_and_the_device(project, monkeypatch, capsys):
+    monkeypatch.setattr(upstream, "installed", lambda: _COMPATIBLE)
+    monkeypatch.setattr(cli, "KrakenDevice", _DoctorDevice)
+    assert cli.main(["--config", str(project), "doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "driver patch:  active" in out
+    assert "verified release" in out
+    assert "NZXT Kraken 2024 Elite RGB (firmware 2.3.1, LCD 640x640)" in out
+    assert "PatchedKrakenZ3" in out
+    assert "liquid 41.5 °C, pump 1850 rpm, fan 900 rpm" in out
+
+
+def test_doctor_exit_3_lists_the_reasons_when_the_patch_is_inactive(
+        project, monkeypatch, capsys):
+    monkeypatch.setattr(upstream, "installed", lambda: _INCOMPATIBLE)
+    assert cli.main(["--config", str(project), "doctor", "--no-device"]) == 3
+    out = capsys.readouterr().out
+    assert "driver patch:  INACTIVE" in out
+    assert "- KrakenZ3._send_data changed upstream" in out
+    assert "device:" not in out  # --no-device never touches USB
+
+
+def test_doctor_with_patch_disabled_in_config_is_fine(project, monkeypatch, capsys):
+    project.write_text(project.read_text() + "[device]\ndriver_patch = false\n")
+    monkeypatch.setattr(upstream, "installed", lambda: _INCOMPATIBLE)
+    assert cli.main(["--config", str(project), "doctor", "--no-device"]) == 0
+    assert "disabled in the configuration" in capsys.readouterr().out
+
+
+def test_doctor_reports_an_unreachable_device(project, monkeypatch, capsys):
+    monkeypatch.setattr(upstream, "installed", lambda: _COMPATIBLE)
+    monkeypatch.setattr(cli, "KrakenDevice", _UnreachableDevice)
+    assert cli.main(["--config", str(project), "doctor"]) == 1
+    assert "device:        no device" in capsys.readouterr().out
+
+
+def test_doctor_reports_a_bootloader_with_exit_78(project, monkeypatch, capsys):
+    class Wedged(_UnreachableDevice):
+        def connect(self):
+            raise DeviceInBootloader("stuck in bootloader mode")
+
+    monkeypatch.setattr(upstream, "installed", lambda: _COMPATIBLE)
+    monkeypatch.setattr(cli, "KrakenDevice", Wedged)
+    assert cli.main(["--config", str(project), "doctor"]) == 78
+    assert "stuck in bootloader" in capsys.readouterr().out
