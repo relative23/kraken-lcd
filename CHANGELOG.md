@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] – 2026-09-11
+
+Field data from the journal of the development machine (six bootloader
+wedges since July under an 8-tile / 20 s carousel, and a five-day restart
+storm in August against a device that had stopped answering) drove two
+changes to how the daemon treats a failing device.
+
+### Changed
+
+- **Cooldown instead of exit.** After three consecutive upload failures
+  the daemon no longer exits (which made systemd restart it every ~30 s —
+  1931 restarts in five days in August, each one re-initializing and
+  re-uploading against a hung device). It hands the LCD back to the
+  firmware, disconnects, waits 5, 15 and then 60 minutes between probes
+  while keeping the watchdog alive, and resumes when the device answers
+  again. A device that vanishes mid-upload gets the same treatment. The
+  bootloader and unsupported-firmware cases remain final (exit code 78).
+- **Unchanged tiles are not re-uploaded.** A tile whose rendered file is
+  already on the LCD (single-tile display with stable values) is skipped;
+  the device layer tracks what is on screen and forgets it after a reset,
+  reconnect, full memory clear or failed upload.
+- `config.toml` and the README now state the upload load formula
+  (3600 / display_seconds uploads per hour) with the observed wedge data,
+  so the trade-off is visible when choosing `display_seconds`.
+
 ## [1.2.0] – 2026-09-11
 
 The dependency on liquidctl's private driver internals — the project's

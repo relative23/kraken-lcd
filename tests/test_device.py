@@ -484,3 +484,34 @@ def test_patch_disabled_by_config_skips_the_patch(monkeypatch):
 
     monkeypatch.setattr("kraken_lcd.driver_patch.find_patched_kraken", must_not_be_called)
     assert device_mod._find_kraken(use_patch=False) is stock
+
+
+def test_displayed_upload_tracks_the_lcd_content(device, tmp_path):
+    dev, driver = device
+    assert dev.displayed_upload is None
+    path = _gif(tmp_path)
+    assert dev.show_gif(path) is True
+    assert dev.displayed_upload == path
+    driver.fail_next = 99
+    assert dev.show_gif(_gif(tmp_path, name="other.gif")) is False
+    assert dev.displayed_upload is None  # a failed upload leaves it unknown
+
+
+def test_displayed_upload_survives_a_soft_clear_but_not_a_full_one(monkeypatch, tmp_path):
+    dev, driver = _device(monkeypatch, driver=FakePatchedDriver())
+    path = _gif(tmp_path)
+    dev.show_gif(path)
+    dev.clear_image_memory()            # soft: the displayed bucket stays
+    assert dev.displayed_upload == path
+    dev.clear_image_memory(full=True)   # full: LCD switches to liquid view
+    assert dev.displayed_upload is None
+
+
+def test_displayed_upload_is_forgotten_on_reset_and_disconnect(device, tmp_path):
+    dev, _ = device
+    dev.show_gif(_gif(tmp_path))
+    dev.reset_to_liquid()
+    assert dev.displayed_upload is None
+    dev.show_gif(_gif(tmp_path))
+    dev.disconnect()
+    assert dev.displayed_upload is None

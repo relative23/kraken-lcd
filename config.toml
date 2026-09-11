@@ -3,11 +3,15 @@
 # After changes: sudo systemctl restart kraken-lcd
 
 [carousel]
-display_seconds = 20        # per-tile display time (safety floor: 5). Lower
-                            # values mean proportionally more uploads and
-                            # image-memory churn; sustained 10 s cadence has
-                            # crashed a 2024 Elite's firmware into its
-                            # bootloader.
+display_seconds = 20        # per-tile display time (safety floor: 5).
+                            # Every tile shown is one upload; uploads per
+                            # hour = 3600 / display_seconds (180 at 20 s, 90
+                            # at 40 s) regardless of the tile count. A 2024
+                            # Elite running 180 uploads/h fell into its
+                            # bootloader six times in six weeks (2.5-39 h per
+                            # run); 10 s crashed it within 2 h. Longer is
+                            # safer. A single tile with unchanged values is
+                            # not re-uploaded at all.
 brightness = 100            # LCD brightness applied at startup (0-100)
 # Available tiles: liquid, cpu, gpu, temps, ram, nvme, pump, fan
 # Order = display order; omit a tile to disable it.

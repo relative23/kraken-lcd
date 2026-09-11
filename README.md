@@ -37,7 +37,9 @@ small Python daemon on top of [liquidctl](https://github.com/liquidctl/liquidctl
   the device firmware — it keeps regulating even with the daemon stopped.
 - **Robust as a service:** systemd watchdog, dedicated unprivileged user,
   suspend/resume hook, bootloader detection with clear recovery
-  instructions and restart suppression.
+  instructions and restart suppression. A device that stops answering is
+  left alone: the daemon hands the LCD back to the firmware and cools down
+  (5, 15, then 60 min between probes) instead of restarting against it.
 - **Per-tile styling:** labels, colors, positions, palette/frame tuning.
 
 ## Supported devices
@@ -166,6 +168,22 @@ project exists to avoid). Recovery: shut down, **cut standby power for
 service intentionally stays stopped while a bootloader is detected
 (exit code 78) and starts normally on the next boot.
 
+**"cooling down for N min" in the log:** three uploads in a row failed
+(typically every command times out while the device is still listed as
+`1e71:3012`). The daemon disconnects and probes again after 5, 15 and then
+every 60 minutes; the LCD shows the firmware screen meanwhile. If it does
+not come back after an hour, the device needs the same power cut as the
+bootloader case. Without this cooldown the daemon used to exit and be
+restarted by systemd every ~3.6 minutes, for days.
+
+**How much upload load is safe?** Every tile shown is one upload:
+3600 / `display_seconds` per hour, independent of the tile count. On the
+development 2024 Elite RGB, 180 uploads/h (20 s) ended in a bootloader
+wedge after 2.5–39 h, six times in six weeks; 10 s wedged it within 2 h.
+40 s halves the load. `journalctl -u kraken-lcd | grep 'upload health'`
+shows uploads and firmware refusals per hour. A single tile whose values
+do not change is not re-uploaded at all.
+
 **No device found:** `lsusb | grep 1e71` must show one of the supported
 IDs. Stop NZXT CAM / CoolerControl (`Conflicts=coolercontrold.service` is
 declared by the unit).
@@ -193,7 +211,7 @@ kernel driver; without either the tile is skipped silently.
 ## Development
 
 ```bash
-python3 -m pytest      # 205 tests, no hardware required
+python3 -m pytest      # 217 tests, no hardware required
 ruff check .           # lint (same as CI)
 python3 -m kraken_lcd.upstream   # fingerprints of the installed liquidctl internals
 ```

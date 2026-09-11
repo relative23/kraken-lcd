@@ -8,9 +8,9 @@ StartLimitIntervalSec=600
 StartLimitBurst=5
 
 [Service]
-# notify + watchdog: the main loop pings before every tile (~10-15 s);
-# if the process ever hangs (e.g. a USB stall inside hidapi), systemd
-# restarts it after 90 s
+# notify + watchdog: the main loop pings before every tile and every 30 s
+# during a cooldown; if the process ever hangs (e.g. a USB stall inside
+# hidapi), systemd restarts it after 90 s
 Type=notify
 NotifyAccess=main
 WatchdogSec=90

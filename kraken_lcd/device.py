@@ -165,6 +165,7 @@ class KrakenDevice:
         self._status_failures = 0
         self._monitor = monitor or UploadMonitor()
         self._firmware: str | None = None
+        self._displayed: Path | None = None
 
     @property
     def description(self) -> str:
@@ -174,6 +175,12 @@ class KrakenDevice:
     def firmware_version(self) -> str | None:
         """Firmware version reported by the device at connect, if any."""
         return self._firmware
+
+    @property
+    def displayed_upload(self) -> Path | None:
+        """The file known to be on the LCD right now, or None when unknown
+        (never uploaded, cleared, reconnected, reset, or a failed upload)."""
+        return self._displayed
 
     @property
     def driver_class(self) -> str:
@@ -228,6 +235,7 @@ class KrakenDevice:
                  self._firmware or "unknown", self.driver_class)
 
     def disconnect(self) -> None:
+        self._displayed = None
         if self._driver is None:
             return
         try:
@@ -306,6 +314,7 @@ class KrakenDevice:
         """Hand the LCD back to the firmware's built-in liquid-temp screen."""
         if self._driver is None:
             return
+        self._displayed = None
         try:
             self._driver.set_screen("lcd", "liquid", None)
             log.info("LCD reset to the built-in liquid screen")
@@ -368,6 +377,7 @@ class KrakenDevice:
         self._pace()
         retries = self._cfg.upload_retries
         refusals = 0
+        self._displayed = None  # unknown until the upload is confirmed
         for attempt in range(1, retries + 1):
             try:
                 device_errors = self._try_upload(path)
@@ -385,6 +395,7 @@ class KrakenDevice:
                 self._last_upload = time.monotonic()
                 self._bytes_since_cleanup += size
                 self._last_upload_size = size
+                self._displayed = path
                 self._monitor.record(succeeded=True, refusals=refusals)
                 return True
             log.warning("upload attempt %d/%d rejected by the device: %s",
@@ -450,6 +461,7 @@ class KrakenDevice:
                 except Exception as exc:
                     log.warning("soft bucket clear failed (%s), clearing fully", exc)
         self._bytes_since_cleanup = 0
+        self._displayed = None  # a full clear switches the LCD to liquid view
         cleanup = getattr(self._driver, "_delete_all_buckets", None)
         if cleanup is None:
             log.info("driver offers no bucket cleanup, reconnecting instead")

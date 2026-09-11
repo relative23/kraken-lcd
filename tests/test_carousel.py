@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from kraken_lcd import carousel as carousel_mod
 from kraken_lcd.cache import RenderCache
 from kraken_lcd.carousel import Carousel
 from kraken_lcd.config import CacheConfig, CarouselConfig, Config, DeviceConfig, RenderConfig
@@ -19,6 +20,8 @@ class FakeDevice:
         self.events = []
         self.connect_failures = 0
         self.on_upload = None
+        self.displayed_upload = None  # mirrors KrakenDevice.displayed_upload
+        self.raise_on_upload = None   # exception to raise from show_gif
 
     def connect(self):
         if self.connect_failures > 0:
@@ -28,12 +31,14 @@ class FakeDevice:
         self.events.append("connect")
 
     def disconnect(self):
+        self.displayed_upload = None
         self.events.append("disconnect")
 
     def set_brightness(self, percent):
         self.events.append("brightness")
 
     def reset_to_liquid(self):
+        self.displayed_upload = None
         self.events.append("reset")
 
     def flush_upload_stats(self):
@@ -51,6 +56,10 @@ class FakeDevice:
         return DeviceStatus(liquid_temp=34.2, pump_rpm=1850, fan_rpm=900)
 
     def show_gif(self, path: Path) -> bool:
+        self.events.append("upload")
+        if self.raise_on_upload is not None:
+            raise self.raise_on_upload
+        self.displayed_upload = path if self.upload_ok else None
         if self.upload_ok:
             self.uploads.append(path)
             if self.on_upload:
@@ -132,13 +141,156 @@ def test_stop_request_aborts_cycle(cfg):
     assert device.uploads == []
 
 
-def test_consecutive_upload_failures_raise(cfg):
+@pytest.fixture
+def instant_cooldown(monkeypatch):
+    """Record cooldown waits instead of sleeping through them."""
+    waits = []
+    monkeypatch.setattr(Carousel, "_wait_with_watchdog",
+                        lambda self, seconds: waits.append(seconds))
+    return waits
+
+
+def test_consecutive_upload_failures_cool_down_instead_of_exiting(
+        cfg, instant_cooldown):
     device = FakeDevice()
     device.upload_ok = False
     carousel = _carousel(cfg, device)
-    with pytest.raises(DeviceError):
-        for _ in range(3):
-            carousel._one_cycle()
+    carousel._one_cycle()  # 3 tiles fail -> cooldown inside the cycle
+    assert instant_cooldown == [5 * 60.0]
+    # LCD handed back, disconnected, then a full re-setup after the wait
+    i = device.events.index("reset")
+    assert device.events[i:i + 5] == ["reset", "disconnect", "connect", "clear", "cooling"]
+    assert carousel._failures == 0
+
+
+def test_cooldown_ladder_grows_and_a_success_resets_it(cfg, instant_cooldown):
+    device = FakeDevice()
+    device.upload_ok = False
+    carousel = _carousel(cfg, device)
+    for _ in range(4):
+        carousel._one_cycle()
+    assert instant_cooldown == [300.0, 900.0, 3600.0, 3600.0]  # capped at 60 min
+    device.upload_ok = True
+    carousel._one_cycle()
+    assert carousel._cooldowns == 0  # a successful upload resets the ladder
+    device.upload_ok = False
+    carousel._one_cycle()
+    assert instant_cooldown[-1] == 300.0  # ... so the next cooldown is short again
+
+
+def test_failed_reconnect_after_cooldown_starts_a_longer_cooldown(
+        cfg, instant_cooldown):
+    device = FakeDevice()
+    device.upload_ok = False
+    device.connect_failures = 2  # the device stays away for two probes
+    carousel = _carousel(cfg, device)
+    carousel._one_cycle()
+    assert instant_cooldown == [300.0, 900.0, 3600.0]
+    assert device.events.count("connect-failed") == 2
+    assert device.events[-4:] == ["connect", "clear", "cooling", "brightness"]
+
+
+def test_hung_device_that_reconnects_but_stays_silent_keeps_cooling_down(
+        cfg, instant_cooldown):
+    # 2026-08 state: connect() succeeds, every command times out. The probe
+    # must not declare the device back until a status read answers.
+    device = FakeDevice()
+    device.upload_ok = False
+    carousel = _carousel(cfg, device)
+    silent = {"probes": 2}
+
+    def status():
+        # silent only for the cooldown probes (after the LCD was handed back),
+        # so the tiles still render and fail normally before that
+        if "reset" in device.events and silent["probes"] > 0:
+            silent["probes"] -= 1
+            return DeviceStatus()  # nothing plausible
+        return DeviceStatus(liquid_temp=34.2, pump_rpm=1850, fan_rpm=900)
+
+    device.read_status = status
+    carousel._one_cycle()
+    assert instant_cooldown == [300.0, 900.0, 3600.0]  # two silent probes, third answers
+    assert device.events[-3:] == ["clear", "cooling", "brightness"]  # set up only once
+
+
+def test_device_error_during_upload_goes_straight_to_cooldown(cfg, instant_cooldown):
+    # e.g. the device vanished while show_gif() reconnected internally
+    device = FakeDevice()
+    device.raise_on_upload = DeviceNotFound("gone")
+    carousel = _carousel(cfg, device)
+    device.on_upload = None
+    carousel._one_cycle()
+    assert device.events.count("upload") == 1  # no second attempt before cooling down
+    assert instant_cooldown == [300.0]
+
+
+def test_bootloader_during_cooldown_reconnect_is_final(cfg, instant_cooldown):
+    device = FakeDevice()
+    device.upload_ok = False
+    carousel = _carousel(cfg, device)
+
+    def wedged():
+        raise DeviceInBootloader("wedged")
+
+    device.connect = wedged
+    with pytest.raises(DeviceInBootloader):
+        carousel._one_cycle()
+
+
+def test_unsupported_firmware_is_not_cooled_down(cfg, instant_cooldown):
+    from kraken_lcd.device import DeviceUnsupported
+    device = FakeDevice()
+    device.raise_on_upload = DeviceUnsupported("firmware 2.x cannot show GIFs")
+    carousel = _carousel(cfg, device)
+    with pytest.raises(DeviceUnsupported):
+        carousel._one_cycle()
+    assert instant_cooldown == []
+
+
+def test_cooldown_wait_pings_the_watchdog_and_honours_stop(cfg, monkeypatch):
+    monkeypatch.setattr(carousel_mod, "WATCHDOG_PING_SECONDS", 0.005)
+    notifier = FakeNotifier()
+    carousel = _carousel(cfg, FakeDevice(), notifier)
+    carousel._wait_with_watchdog(0.05)
+    assert notifier.watchdog_count >= 3  # several pings inside one wait
+    import threading
+    threading.Timer(0.02, carousel.request_stop).start()
+    import time
+    started = time.monotonic()
+    carousel._wait_with_watchdog(60.0)
+    assert time.monotonic() - started < 5.0  # stop request cut the wait short
+
+
+def test_stop_during_cooldown_tears_down_cleanly(cfg, monkeypatch):
+    monkeypatch.setattr(carousel_mod, "COOLDOWN_MINUTES", (0.0001,))
+    device = FakeDevice()
+    device.upload_ok = False
+    notifier = FakeNotifier()
+    carousel = _carousel(cfg, device, notifier)
+    original_wait = carousel._wait_with_watchdog
+
+    def stop_during_wait(seconds):
+        carousel.request_stop()
+        original_wait(seconds)
+
+    carousel._wait_with_watchdog = stop_during_wait
+    carousel.run()  # must return, not loop or raise
+    assert device.events[-3:] == ["flush", "reset", "disconnect"]
+    assert notifier.stopping_count == 1
+
+
+def test_unchanged_single_tile_is_not_re_uploaded(cfg):
+    from dataclasses import replace
+    single = replace(cfg, carousel=replace(cfg.carousel, screens=("cpu",)))
+    device = FakeDevice()
+    carousel = _carousel(single, device)
+    carousel._one_cycle()
+    carousel._one_cycle()
+    carousel._one_cycle()
+    assert len(device.uploads) == 1  # same file on the LCD: nothing to send
+    device.reset_to_liquid()  # LCD content unknown again -> upload resumes
+    carousel._one_cycle()
+    assert len(device.uploads) == 2
 
 
 def test_run_full_lifecycle_and_teardown(cfg):
