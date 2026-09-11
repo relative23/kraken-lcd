@@ -1,46 +1,29 @@
-From f7c098793181840e44f674b553f55356f4b662db Mon Sep 17 00:00:00 2001
+From 0621f6549537965326cf02120bcddc4ca77cb8fe Mon Sep 17 00:00:00 2001
 From: relativesharp <relativesharp@gmail.com>
-Date: Thu, 10 Sep 2026 20:11:59 +0200
+Date: Fri, 11 Sep 2026 07:42:52 +0200
 Subject: [PATCH] kraken3: abort the upload when the device refuses the bucket
  setup
 
-KrakenZ3._send_data only logged a refused bucket setup and then streamed
+KrakenZ3._send_data only logs a refused bucket setup and then streams
 the whole image into the bulk endpoint anyway. The transfer cannot land
 anywhere, the bucket switch fails afterwards and the caller never learns
 that the image did not reach the screen.
 
-Worse, on the Kraken 2024 Elite (which refuses the setup sporadically
-even with free image memory) doing that under a periodic upload workload
-has wedged devices into their bootloader (USB 1e71:3011), recoverable
-only by cutting standby power (#774).
+On the Kraken 2024 Elite RGB, which refuses the setup sporadically even
+with free image memory, streaming regardless under a periodic upload
+workload is the situation in which our device wedged into its bootloader
+(USB 1e71:3011) twice, recoverable only by cutting standby power.
 
 Raise ExpectationNotMet before any bulk data is sent instead. The bucket
-switch failure keeps its log line: at that point nothing more is streamed.
+switch failure keeps its log line: at that point nothing more is
+streamed. The sporadic refusals themselves are not addressed here.
 
-Closes #774
+Refs #774
 ---
- CHANGELOG.md                |  7 +++++++
  liquidctl/driver/kraken3.py |  9 ++++++---
  tests/test_kraken3.py       | 14 ++++++++++++++
- 3 files changed, 27 insertions(+), 3 deletions(-)
+ 2 files changed, 20 insertions(+), 3 deletions(-)
 
-diff --git a/CHANGELOG.md b/CHANGELOG.md
-index 190538c..78c82d7 100644
---- a/CHANGELOG.md
-+++ b/CHANGELOG.md
-@@ -1,5 +1,12 @@
- # Changelog
- 
-+## [Unreleased]
-+
-+Changed:
-+
-+- NZXT Kraken Z?3/2023/2024: abort an image upload when the device refuses
-+  the bucket setup instead of streaming the image anyway (liquidctl#774)
-+
- ## [1.16.0] – 2026-03-03
- 
- ### Changes since 1.15.0
 diff --git a/liquidctl/driver/kraken3.py b/liquidctl/driver/kraken3.py
 index 8ef2767..fe18053 100644
 --- a/liquidctl/driver/kraken3.py
