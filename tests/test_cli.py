@@ -236,6 +236,17 @@ def test_doctor_reports_an_unreachable_device(project, monkeypatch, capsys):
     assert "device:        no device" in capsys.readouterr().out
 
 
+def test_doctor_reports_a_device_that_cannot_be_opened(project, monkeypatch, capsys):
+    # the real device layer: hidapi's plain OSError used to crash the command
+    from test_device import UnopenableDriver
+    monkeypatch.setattr(upstream, "installed", lambda: _COMPATIBLE)
+    monkeypatch.setattr("kraken_lcd.device._bootloader_present", lambda: False)
+    monkeypatch.setattr("kraken_lcd.device._find_kraken",
+                        lambda use_patch: UnopenableDriver())
+    assert cli.main(["--config", str(project), "doctor"]) == 1
+    assert "failed: open failed" in capsys.readouterr().out
+
+
 def test_doctor_reports_a_bootloader_with_exit_78(project, monkeypatch, capsys):
     class Wedged(_UnreachableDevice):
         def connect(self):
