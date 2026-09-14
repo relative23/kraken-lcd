@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] – 2026-09-14
+
+Error handling at the boundary between liquidctl/hidapi and the daemon.
+The 1.3.0 cooldown did not cover a device that is on the bus but cannot
+be opened; that case still ended the process and left recovery to systemd.
+
+### Fixed
+
+- **A device that could not be opened ended the process.** hidapi and
+  pyusb report a busy or inaccessible device with a plain `OSError` /
+  `USBError`, which escaped the device layer's error handling: instead of
+  the connect retry at startup or the cooldown while running, the daemon
+  exited and systemd restarted it until the start limit was reached. The
+  device layer now reports it as `DeviceUnavailable` (checking for a
+  bootloader first) and releases the half-opened handles. `status`,
+  `reset` and `doctor` print the error instead of a traceback.
+- The hourly upload-health line counts an upload that ends in a device
+  error (e.g. the reconnect between two attempts cannot reach the device)
+  as failed; it used to be missing from the summary.
+- The cooldown log line no longer claims "3 consecutive upload failures"
+  for every round; it names what started it (upload failures, a device
+  error, a failed reconnect, no answer after reconnect).
+- `docs/firmware-notes.md` gave the development device's firmware as 2.x;
+  it reports 1.2.0.
+
 ## [1.3.0] – 2026-09-11
 
 Field data from the journal of the development machine (six bootloader

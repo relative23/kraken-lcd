@@ -132,17 +132,20 @@ class Carousel:
             if self._stop.is_set():
                 return
             self._notifier.watchdog()
+            reason = None
             try:
                 ok = self._show_screen(self._screens[name])
             except (DeviceInBootloader, DeviceUnsupported):
                 raise  # final: a restart cannot help, exit code 78
             except DeviceError as exc:
-                # e.g. the device vanished during a reconnect inside show_gif
+                # e.g. the device vanished or could not be opened during a
+                # reconnect inside show_gif
                 log.warning("device error while showing %s: %s", name, exc)
                 self._failures = MAX_CONSECUTIVE_FAILURES
+                reason = "device error"
                 ok = False
             if self._failures >= MAX_CONSECUTIVE_FAILURES:
-                self._cooldown()
+                self._cooldown(reason or f"{self._failures} consecutive upload failures")
                 return  # start a fresh cycle on the reconnected device
             if ok:
                 shown += 1
@@ -152,21 +155,22 @@ class Carousel:
                         self._cfg.carousel.display_seconds)
             self._stop.wait(self._cfg.carousel.display_seconds)
 
-    def _cooldown(self) -> None:
+    def _cooldown(self, reason: str) -> None:
         """Stop pushing data to a device that keeps failing.
 
         Hands the LCD back to the firmware, disconnects, waits (5, 15, then
         60 min per consecutive cooldown) with the watchdog kept alive, and
         reconnects. A reconnect that fails starts the next, longer cooldown;
         a bootloader is final and propagates. Returns once the device is
-        back or a stop was requested.
+        back or a stop was requested. *reason* names what started this
+        cooldown in the log; later rounds name the failed probe instead.
         """
         while not self._stop.is_set():
             self._cooldowns += 1
             minutes = COOLDOWN_MINUTES[min(self._cooldowns, len(COOLDOWN_MINUTES)) - 1]
-            log.error("%d consecutive upload failures — cooling down for %.0f min "
-                      "(cooldown #%d), the LCD is handed back to the firmware "
-                      "meanwhile", self._failures, minutes, self._cooldowns)
+            log.error("%s — cooling down for %.0f min (cooldown #%d), the LCD "
+                      "is handed back to the firmware meanwhile",
+                      reason, minutes, self._cooldowns)
             self._device.reset_to_liquid()  # best effort on a sick device
             self._device.disconnect()
             self._wait_with_watchdog(minutes * 60.0)
@@ -179,12 +183,14 @@ class Carousel:
                 if self._device.read_status().liquid_temp is None:
                     log.warning("device connected but does not answer status "
                                 "reads, staying in cooldown")
+                    reason = "no answer after reconnect"
                     continue
                 self._after_connect()
             except (DeviceInBootloader, DeviceUnsupported):
                 raise
             except DeviceError as exc:
                 log.warning("reconnect after cooldown failed: %s", exc)
+                reason = "reconnect failed"
                 continue
             self._failures = 0
             log.info("device is back after cooldown #%d, resuming the carousel",

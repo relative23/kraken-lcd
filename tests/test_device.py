@@ -4,9 +4,11 @@ import pytest
 
 from kraken_lcd.config import DeviceConfig
 from kraken_lcd.device import (
+    DeviceError,
     DeviceInBootloader,
     DeviceNotFound,
     DeviceStatus,
+    DeviceUnavailable,
     DeviceUnsupported,
     KrakenDevice,
 )
@@ -320,6 +322,39 @@ def test_monitor_counts_a_firmware_bucket_refusal(monkeypatch, tmp_path):
     assert mon.records == [(True, 1)]
 
 
+def test_monitor_records_upload_that_ends_in_a_device_error(monkeypatch, tmp_path):
+    # the upload fails and the reconnect cannot open the device: the health
+    # summary used to report "0 failed" for exactly this upload
+    mon = RecordingMonitor()
+    dev, driver = _device(monkeypatch, monitor=mon)
+    driver.fail_next = 1
+
+    def refuse_open():
+        raise OSError("open failed")
+
+    driver.connect = refuse_open
+    with pytest.raises(DeviceUnavailable):
+        dev.show_gif(_gif(tmp_path))
+    assert mon.records == [(False, 0)]
+
+
+def test_monitor_not_recorded_for_breaker_reconnect_failure(monkeypatch, tmp_path):
+    # the circuit breaker reconnects *before* any upload attempt; a device
+    # that is gone by then was never uploaded to
+    mon = RecordingMonitor()
+    dev, driver = _device(monkeypatch, monitor=mon)
+
+    def broken_status():
+        raise OSError("usb transport down")
+
+    driver.get_status = broken_status
+    dev.read_status()
+    monkeypatch.setattr("kraken_lcd.device._bootloader_present", lambda: True)
+    with pytest.raises(DeviceInBootloader):
+        dev.show_gif(_gif(tmp_path))
+    assert mon.records == []
+
+
 def test_monitor_not_recorded_for_oversized_upload(monkeypatch, tmp_path):
     # the size guard never touches the device, so it is not an upload event
     mon = RecordingMonitor()
@@ -397,6 +432,78 @@ def test_crashing_discovery_without_bootloader(monkeypatch):
     dev = KrakenDevice(DeviceConfig(), finder=crashing_finder)
     with pytest.raises(DeviceNotFound):
         dev.connect()
+
+
+class UnopenableDriver(FakeDriver):
+    """Enumerated, but the HID node cannot be opened (busy, permissions)."""
+
+    def __init__(self):
+        super().__init__()
+        self.closes = 0
+
+    def connect(self):
+        raise OSError("open failed")  # what hidapi raises
+
+    def disconnect(self):
+        self.closes += 1
+        super().disconnect()
+
+
+def test_open_failure_is_a_device_error(monkeypatch):
+    # a plain OSError from hidapi used to escape the DeviceError hierarchy
+    # and end the process instead of being retried or cooled down
+    monkeypatch.setattr("kraken_lcd.device._bootloader_present", lambda: False)
+    driver = UnopenableDriver()
+    dev = KrakenDevice(DeviceConfig(), finder=lambda: driver)
+    with pytest.raises(DeviceUnavailable) as info:
+        dev.connect()
+    assert isinstance(info.value, DeviceError)
+    assert "open failed" in str(info.value)
+    assert dev.driver_class == "none"  # the failed driver is not kept
+    assert driver.closes == 1          # half-opened handles are released
+
+
+def test_open_failure_with_bootloader_on_bus(monkeypatch):
+    # the device dropped into its bootloader between discovery and open
+    calls = iter([False, True])  # absent pre-check, present after the failure
+    monkeypatch.setattr("kraken_lcd.device._bootloader_present",
+                        lambda: next(calls))
+    dev = KrakenDevice(DeviceConfig(), finder=UnopenableDriver)
+    with pytest.raises(DeviceInBootloader):
+        dev.connect()
+
+
+def test_open_failure_during_upload_reconnect(monkeypatch, tmp_path):
+    # an upload fails, and the reconnect inside show_gif() cannot open the
+    # device: the caller gets a DeviceError, and nothing reached the device
+    dev, driver = _device(monkeypatch)
+    driver.fail_next = 1
+
+    def refuse_open():
+        raise OSError("open failed")
+
+    driver.connect = refuse_open
+    with pytest.raises(DeviceUnavailable):
+        dev.show_gif(_gif(tmp_path))
+    assert driver.calls == []
+
+
+def test_open_failure_from_real_hidapi_is_a_device_error(monkeypatch):
+    # the real liquidctl connect path on the real hidapi binding, pointed at
+    # a device node that does not exist — no hardware needed
+    hid = pytest.importorskip("hid")
+    from liquidctl.driver.usb import BaseUsbDriver, HidapiDevice
+    info = {"path": b"/dev/hidraw-kraken-lcd-test-missing", "vendor_id": 0x1E71,
+            "product_id": 0x3012, "serial_number": "", "release_number": 0,
+            "manufacturer_string": "NZXT", "product_string": "",
+            "usage_page": 0, "usage": 0, "interface_number": 0}
+    driver = BaseUsbDriver(HidapiDevice(hid, info), "NZXT Kraken 2024 Elite RGB")
+    monkeypatch.setattr("kraken_lcd.device._bootloader_present", lambda: False)
+    dev = KrakenDevice(DeviceConfig(), finder=lambda: driver)
+    with pytest.raises(DeviceUnavailable) as info:
+        dev.connect()
+    assert isinstance(info.value.__cause__, OSError)
+    assert "NZXT Kraken 2024 Elite RGB" in str(info.value)
 
 
 def test_bootloader_detected(monkeypatch):

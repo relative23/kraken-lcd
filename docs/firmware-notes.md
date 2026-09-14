@@ -1,7 +1,7 @@
 # Kraken LCD firmware notes
 
 Observations from developing against an NZXT Kraken 2024 Elite RGB
-(`1e71:3012`, firmware 2.x), collected here because none of this is
+(`1e71:3012`, firmware 1.2.0), collected here because none of this is
 documented anywhere else. Reported upstream as liquidctl
 [#774 (comment)](https://github.com/liquidctl/liquidctl/issues/774) and
 [#907](https://github.com/liquidctl/liquidctl/issues/907).

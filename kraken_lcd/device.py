@@ -50,6 +50,11 @@ class DeviceNotFound(DeviceError):
     pass
 
 
+class DeviceUnavailable(DeviceError):
+    """The device is on the bus but could not be opened (busy, missing
+    permissions, still re-enumerating). Usually transient."""
+
+
 class DeviceInBootloader(DeviceError):
     pass
 
@@ -223,7 +228,21 @@ class KrakenDevice:
             raise DeviceNotFound(
                 f"no NZXT Kraken with an LCD found; supported: {supported} — "
                 f"check `lsusb | grep 1e71` and `kraken-lcd doctor`")
-        driver.connect()
+        try:
+            driver.connect()
+        except Exception as exc:
+            # hidapi and pyusb raise plain OSError/USBError here ("open
+            # failed", "Resource busy"); outside the DeviceError hierarchy it
+            # bypassed the retry and cooldown handling and ended the process
+            try:
+                driver.disconnect()
+            except Exception as close_exc:
+                log.debug("closing the half-opened device failed: %s", close_exc)
+            if _bootloader_present():
+                raise DeviceInBootloader(BOOTLOADER_RECOVERY) from exc
+            raise DeviceUnavailable(
+                f"opening {driver.description} failed: {exc} — another program "
+                f"may be using it, or the udev rule is missing") from exc
         self._driver = driver
         try:
             self._firmware = _firmware_version(driver.initialize())
@@ -364,7 +383,7 @@ class KrakenDevice:
         if self._status_failures >= self.MAX_STATUS_FAILURES:
             log.warning("%d consecutive status read failures — reconnecting "
                         "before the next upload", self._status_failures)
-            self._reconnect()  # DeviceNotFound/-InBootloader propagate
+            self._reconnect()  # DeviceError subclasses propagate
 
         # proactive: clear the image memory *before* the device would start
         # rejecting uploads (reactive recovery below stays as a safety net)
@@ -378,31 +397,37 @@ class KrakenDevice:
         retries = self._cfg.upload_retries
         refusals = 0
         self._displayed = None  # unknown until the upload is confirmed
-        for attempt in range(1, retries + 1):
-            try:
-                device_errors = self._try_upload(path)
-            except DeviceError:
-                raise  # unsupported firmware: retrying cannot help
-            except Exception as exc:
+        try:
+            for attempt in range(1, retries + 1):
+                try:
+                    device_errors = self._try_upload(path)
+                except DeviceError:
+                    raise  # unsupported firmware: retrying cannot help
+                except Exception as exc:
+                    refusals += self._took_refusal()
+                    log.warning("upload attempt %d/%d failed: %s", attempt, retries, exc)
+                    if attempt < retries:
+                        self._reconnect()  # DeviceError subclasses propagate
+                        time.sleep(1.0)
+                    continue
                 refusals += self._took_refusal()
-                log.warning("upload attempt %d/%d failed: %s", attempt, retries, exc)
+                if not device_errors:
+                    self._last_upload = time.monotonic()
+                    self._bytes_since_cleanup += size
+                    self._last_upload_size = size
+                    self._displayed = path
+                    self._monitor.record(succeeded=True, refusals=refusals)
+                    return True
+                log.warning("upload attempt %d/%d rejected by the device: %s",
+                            attempt, retries, "; ".join(device_errors))
                 if attempt < retries:
-                    self._reconnect()  # DeviceNotFound/-InBootloader propagate
+                    self.clear_image_memory(full=True)
                     time.sleep(1.0)
-                continue
-            refusals += self._took_refusal()
-            if not device_errors:
-                self._last_upload = time.monotonic()
-                self._bytes_since_cleanup += size
-                self._last_upload_size = size
-                self._displayed = path
-                self._monitor.record(succeeded=True, refusals=refusals)
-                return True
-            log.warning("upload attempt %d/%d rejected by the device: %s",
-                        attempt, retries, "; ".join(device_errors))
-            if attempt < retries:
-                self.clear_image_memory(full=True)
-                time.sleep(1.0)
+        except DeviceError:
+            # the upload ends here (device gone, unopenable, unsupported); it
+            # still counts as a failed upload in the health summary
+            self._monitor.record(succeeded=False, refusals=refusals)
+            raise
         self._last_upload = time.monotonic()
         self._monitor.record(succeeded=False, refusals=refusals)
         return False

@@ -168,9 +168,11 @@ project exists to avoid). Recovery: shut down, **cut standby power for
 service intentionally stays stopped while a bootloader is detected
 (exit code 78) and starts normally on the next boot.
 
-**"cooling down for N min" in the log:** three uploads in a row failed
-(typically every command times out while the device is still listed as
-`1e71:3012`). The daemon disconnects and probes again after 5, 15 and then
+**"cooling down for N min" in the log:** three uploads in a row failed, or
+the device vanished or could not be opened (another program holding it, a
+missing udev rule); the log line starts with the reason. The common case
+is a device that still shows up as `1e71:3012` but lets every command
+time out. The daemon disconnects and probes again after 5, 15 and then
 every 60 minutes; the LCD shows the firmware screen meanwhile. If it does
 not come back after an hour, the device needs the same power cut as the
 bootloader case. Without this cooldown the daemon used to exit and be

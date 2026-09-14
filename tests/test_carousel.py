@@ -1,13 +1,21 @@
+import logging
 import shutil
 from pathlib import Path
 
 import pytest
+from test_device import FakeDriver
 
 from kraken_lcd import carousel as carousel_mod
 from kraken_lcd.cache import RenderCache
 from kraken_lcd.carousel import Carousel
 from kraken_lcd.config import CacheConfig, CarouselConfig, Config, DeviceConfig, RenderConfig
-from kraken_lcd.device import DeviceError, DeviceInBootloader, DeviceNotFound, DeviceStatus
+from kraken_lcd.device import (
+    DeviceError,
+    DeviceInBootloader,
+    DeviceNotFound,
+    DeviceStatus,
+    KrakenDevice,
+)
 from kraken_lcd.sensors import SensorSnapshot
 
 
@@ -191,7 +199,7 @@ def test_failed_reconnect_after_cooldown_starts_a_longer_cooldown(
 
 
 def test_hung_device_that_reconnects_but_stays_silent_keeps_cooling_down(
-        cfg, instant_cooldown):
+        cfg, instant_cooldown, caplog):
     # 2026-08 state: connect() succeeds, every command times out. The probe
     # must not declare the device back until a status read answers.
     device = FakeDevice()
@@ -208,9 +216,13 @@ def test_hung_device_that_reconnects_but_stays_silent_keeps_cooling_down(
         return DeviceStatus(liquid_temp=34.2, pump_rpm=1850, fan_rpm=900)
 
     device.read_status = status
-    carousel._one_cycle()
+    with caplog.at_level(logging.ERROR, logger="kraken_lcd.carousel"):
+        carousel._one_cycle()
     assert instant_cooldown == [300.0, 900.0, 3600.0]  # two silent probes, third answers
     assert device.events[-3:] == ["clear", "cooling", "brightness"]  # set up only once
+    assert _cooldown_reasons(caplog) == ["3 consecutive upload failures",
+                                         "no answer after reconnect",
+                                         "no answer after reconnect"]
 
 
 def test_device_error_during_upload_goes_straight_to_cooldown(cfg, instant_cooldown):
@@ -222,6 +234,56 @@ def test_device_error_during_upload_goes_straight_to_cooldown(cfg, instant_coold
     carousel._one_cycle()
     assert device.events.count("upload") == 1  # no second attempt before cooling down
     assert instant_cooldown == [300.0]
+
+
+def test_device_that_cannot_be_opened_cools_down_instead_of_exiting(
+        cfg, instant_cooldown, monkeypatch, caplog):
+    # the real device layer under the carousel: uploads start failing and the
+    # device cannot be opened (hidapi OSError) for the reconnect inside the
+    # upload and for two cooldown probes. That OSError used to end the
+    # process, which systemd answered with restarts instead of the cooldown.
+    monkeypatch.setattr("kraken_lcd.device._bootloader_present", lambda: False)
+    monkeypatch.setattr("kraken_lcd.device.time.sleep", lambda s: None)
+    driver = FakeDriver()
+    device = KrakenDevice(DeviceConfig(), finder=lambda: driver)
+    device.connect()
+    driver.fail_next = 99
+    refused_opens = {"left": 3}
+    original_connect = driver.connect
+
+    def connect():
+        if refused_opens["left"]:
+            refused_opens["left"] -= 1
+            raise OSError("open failed")
+        driver.fail_next = 0  # the device is back
+        original_connect()
+
+    driver.connect = connect
+    carousel = _carousel(cfg, device)
+    with caplog.at_level(logging.ERROR, logger="kraken_lcd.carousel"):
+        carousel._one_cycle()  # must not raise
+    assert instant_cooldown == [300.0, 900.0, 3600.0]
+    assert device.driver_class == "FakeDriver"  # reconnected after the third wait
+    assert _cooldown_reasons(caplog) == ["device error", "reconnect failed",
+                                         "reconnect failed"]
+
+
+def _cooldown_reasons(caplog):
+    return [r.getMessage().split(" — ")[0] for r in caplog.records
+            if "cooling down" in r.getMessage()]
+
+
+def test_cooldown_log_names_what_started_each_round(cfg, instant_cooldown, caplog):
+    # the ERROR line used to claim "3 consecutive upload failures" for every
+    # round, including device errors and failed reconnect probes
+    device = FakeDevice()
+    device.upload_ok = False
+    device.connect_failures = 1
+    carousel = _carousel(cfg, device)
+    with caplog.at_level(logging.ERROR, logger="kraken_lcd.carousel"):
+        carousel._one_cycle()
+    assert _cooldown_reasons(caplog) == ["3 consecutive upload failures",
+                                         "reconnect failed"]
 
 
 def test_bootloader_during_cooldown_reconnect_is_final(cfg, instant_cooldown):
