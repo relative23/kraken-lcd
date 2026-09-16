@@ -7,11 +7,13 @@ display_seconds = 20        # per-tile display time (safety floor: 5).
                             # Every tile shown is one upload; uploads per
                             # hour = 3600 / display_seconds (180 at 20 s, 90
                             # at 40 s) regardless of the tile count. A 2024
-                            # Elite running 180 uploads/h fell into its
-                            # bootloader six times in six weeks (2.5-39 h per
-                            # run); 10 s crashed it within 2 h. Longer is
-                            # safer. A single tile with unchanged values is
-                            # not re-uploaded at all.
+                            # Elite fell into its bootloader after 2.5-39 h at
+                            # 180 uploads/h (six runs), after 16.5 h at 90/h
+                            # and within 2 h at 360/h. Fewer uploads help, but
+                            # no rate is known yet at which that device does
+                            # not wedge eventually (README, troubleshooting).
+                            # A single tile with unchanged values is not
+                            # re-uploaded at all.
 brightness = 100            # LCD brightness applied at startup (0-100)
 # Available tiles: liquid, cpu, gpu, temps, ram, nvme, pump, fan
 # Order = display order; omit a tile to disable it.

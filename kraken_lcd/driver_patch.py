@@ -29,8 +29,8 @@ models, a build without source) ``patched_driver_class()`` raises and the
 caller falls back to the stock driver. ``kraken-lcd doctor`` shows the
 verdict and its reasons.
 
-The upstream fix that would make this patch unnecessary is drafted in
-``docs/UPSTREAM.md``.
+The upstream fix that would make this patch unnecessary is submitted as
+liquidctl #927, see ``docs/UPSTREAM.md``.
 """
 
 import logging

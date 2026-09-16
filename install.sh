@@ -26,7 +26,7 @@ while [[ $# -gt 0 ]]; do
     --uninstall) UNINSTALL=1 ;;
     --python) PYTHON="${2:?--python needs a path}"; shift ;;
     --python=*) PYTHON="${1#--python=}" ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift

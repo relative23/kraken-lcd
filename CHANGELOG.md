@@ -4,6 +4,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.2] – 2026-09-16
+
+Documentation corrections after reading the NZXT CAM logs of the
+development machine (Windows dual boot), plus one installer fix. No
+change to the daemon.
+
+### Fixed
+
+- `docs/firmware-notes.md` claimed NZXT CAM can bring a wedged device out
+  of its bootloader. It cannot: CAM re-flashes the firmware, reports
+  "stuck in reprogrammer mode" and offers the update again, endlessly;
+  only cutting standby power recovers the device. The notes and the
+  README troubleshooting say so now.
+- The firmware version of the development device: liquidctl (and
+  `kraken-lcd doctor`) get `1.2.0` from the device's firmware-info
+  report; NZXT CAM shows the same firmware as `1.2.12` (official updates
+  1.2.1 → 1.2.8 on 2025-10-06 and 1.2.8 → 1.2.12 on 2026-03-27). The
+  docs name both readings.
+- The README troubleshooting said a bootloader wedge is "typically caused
+  by the stock driver's upload behavior this project exists to avoid";
+  the development device wedges under the patched driver as well. The
+  wedge data is updated (eight wedges since 2026-07-28, the first 40 s
+  run included) together with what the CAM logs add: no wedge in the 14
+  months before the device was first driven from Linux.
+- `install.sh --help` dropped the last line of the usage text.
+- README: test count (226).
+
 ## [1.3.1] – 2026-09-14
 
 Error handling at the boundary between liquidctl/hidapi and the daemon.

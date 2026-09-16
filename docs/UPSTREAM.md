@@ -17,6 +17,14 @@ project unnecessary (see [liquidctl-compatibility.md](liquidctl-compatibility.md
 - **Submitted as liquidctl [#927](https://github.com/liquidctl/liquidctl/pull/927)
   on 2026-09-11** (branch `kraken3-abort-on-refused-bucket-setup` on
   `relative23/liquidctl`).
+- Field data after the PR: with the abort in place the development
+  device still wedges under a sustained upload workload (eight times
+  between 2026-07-28 and 2026-09-15 at 90–180 uploads/h, see
+  [firmware-notes.md](firmware-notes.md)). The abort removes the blind
+  stream into a refused bucket and makes the failure visible to the
+  caller; it does not prevent the wedge. The PR text gives the device's
+  firmware as 1.2.0, which is liquidctl's reading; NZXT CAM shows 1.2.12.
+  Both points were reported in comments on #774 and #927 on 2026-09-16.
 
 ## The patch
 

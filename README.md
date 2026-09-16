@@ -26,7 +26,10 @@ small Python daemon on top of [liquidctl](https://github.com/liquidctl/liquidctl
   manages the device's image memory proactively, enforces a size budget
   with adaptive frame thinning, and paces uploads. When the device stops
   answering status reads, uploads are held back until a reconnect
-  succeeds — a sick device is never fed more data.
+  succeeds — a sick device is never fed more data. This makes every
+  failed upload visible and removes the blind stream; it has not stopped
+  the development device from wedging under a sustained carousel (see
+  Troubleshooting).
 - **Contained dependency on liquidctl internals.** The patched upload
   path only activates when every liquidctl internal it relies on is
   verifiably the code it was written for (signature + fingerprint of each
@@ -162,11 +165,15 @@ Restart the service after changes.
 **Black display / service failed →** `journalctl -u kraken-lcd -n 50`.
 
 **"Kraken is stuck in bootloader mode (USB 1e71:3011)":** the device
-wedged (typically caused by the stock driver's upload behavior this
-project exists to avoid). Recovery: shut down, **cut standby power for
-~30 s** (PSU switch off or unplug — a reboot is not enough), boot. The
-service intentionally stays stopped while a bootloader is detected
-(exit code 78) and starts normally on the next boot.
+wedged. On the development 2024 Elite RGB this happens under sustained
+upload load with the patched driver too (see "How much upload load is
+safe?" below). Recovery: shut down, **cut standby power for ~30 s** (PSU
+switch off or unplug — a reboot is not enough), boot. The service
+intentionally stays stopped while a bootloader is detected (exit code
+78) and starts normally on the next boot. On a dual-boot machine NZXT
+CAM then finds the device in its bootloader and offers a firmware update
+in an endless loop ("stuck in reprogrammer mode"); CAM cannot recover it
+either — only the power cut does.
 
 **"cooling down for N min" in the log:** three uploads in a row failed, or
 the device vanished or could not be opened (another program holding it, a
@@ -181,10 +188,16 @@ restarted by systemd every ~3.6 minutes, for days.
 **How much upload load is safe?** Every tile shown is one upload:
 3600 / `display_seconds` per hour, independent of the tile count. On the
 development 2024 Elite RGB, 180 uploads/h (20 s) ended in a bootloader
-wedge after 2.5–39 h, six times in six weeks; 10 s wedged it within 2 h.
-40 s halves the load. `journalctl -u kraken-lcd | grep 'upload health'`
-shows uploads and firmware refusals per hour. A single tile whose values
-do not change is not re-uploaded at all.
+wedge after 2.5–39 h, six times in six weeks; 10 s wedged it within 2 h;
+the first run at 90 uploads/h (40 s) wedged after 16.5 h, the next one
+within two hours of the following power cycle. Fewer uploads mean fewer
+bucket writes, but no rate has been found yet at which this device does
+not wedge eventually — and in the 14 months before it was first driven
+from Linux, the same device never wedged under NZXT CAM
+([docs/firmware-notes.md](docs/firmware-notes.md)).
+`journalctl -u kraken-lcd | grep 'upload health'` shows uploads and
+firmware refusals per hour. A single tile whose values do not change is
+not re-uploaded at all.
 
 **No device found:** `lsusb | grep 1e71` must show one of the supported
 IDs. Stop NZXT CAM / CoolerControl (`Conflicts=coolercontrold.service` is
@@ -213,7 +226,7 @@ kernel driver; without either the tile is skipped silently.
 ## Development
 
 ```bash
-python3 -m pytest      # 217 tests, no hardware required
+python3 -m pytest      # 226 tests, no hardware required
 ruff check .           # lint (same as CI)
 python3 -m kraken_lcd.upstream   # fingerprints of the installed liquidctl internals
 ```
