@@ -226,7 +226,7 @@ kernel driver; without either the tile is skipped silently.
 ## Development
 
 ```bash
-python3 -m pytest      # 226 tests, no hardware required
+python3 -m pytest      # 232 tests, no hardware required
 ruff check .           # lint (same as CI)
 python3 -m kraken_lcd.upstream   # fingerprints of the installed liquidctl internals
 ```
