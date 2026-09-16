@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.3] – 2026-09-16
+
+The device's periodic status broadcast (`0x75 0x02`, about one per
+second) was found in the way of two things, both verified with a passive
+HID capture on the development machine.
+
+### Fixed
+
+- **The LCD reset at service stop failed with "missing messages"**
+  whenever the stop came more than ~11 s after the last status read.
+  liquidctl clears the OS report queue before a status read but not
+  before `set_screen`, which then looks at 12 reports at most — the
+  reply sat behind the stale broadcasts. The device layer now drains
+  the queue before every command it issues (reset, brightness, upload,
+  memory clear).
+- **Bucket replies attributed to the wrong command.** The stock
+  `_write_then_read` returns the next report, whatever it is; a broadcast
+  arriving between two commands shifted every following reply by one.
+  The result checks still passed (byte 14 is `0x1` in the broadcast as
+  well), so the upload proceeded with a bucket table read one entry off.
+  The patched driver now reads until the matching reply (request
+  `(a, b)` → report `(a + 1, b)`) and raises `ReplyMissing` otherwise,
+  which the device layer treats like any failed upload attempt. Whether
+  this was behind the sporadic setup refusals is to be seen in the
+  refusal rate.
+
 ## [1.3.2] – 2026-09-16
 
 Documentation corrections after reading the NZXT CAM logs of the

@@ -19,6 +19,18 @@ has two weaknesses in ``KrakenZ3._send_data`` that show on the 2024 Elite:
    → ``soft_clear_inactive()`` does exactly that; the active bucket is
    tracked through ``_switch_bucket``.
 
+3. ``_write_then_read`` returns whatever report comes next. The device
+   broadcasts a status report (``0x75 0x02``) about once per second; when
+   one arrives between two commands, the driver takes it as the reply and
+   every later reply is attributed to the previous command: the bucket
+   table is read shifted by one entry, the result checks pass anyway
+   (byte 14 is 0x1 in all of these replies) and the memory offset for
+   the upload is computed from the wrong entries. Observed live with a
+   passive HID capture on 2026-09-16.
+   → ``_write_then_read`` reads until the *matching* reply (the device
+   answers request ``(a, b)`` with report ``(a + 1, b)``) and raises
+   ``ReplyMissing`` if it never comes.
+
 The patch is deliberately defensive. It touches private liquidctl API,
 which may change in any release, so it only activates when every internal
 it depends on is exactly the code it was written against — checked by
@@ -45,6 +57,14 @@ class BucketSetupRefused(Exception):
     """The firmware refused the bucket setup / switch; the upload was
     aborted *before* any image data was streamed."""
 
+
+class ReplyMissing(Exception):
+    """The device did not answer a command within the read budget."""
+
+
+# reports to look at for one reply: the OS queue holds 64, and between a
+# drain and the command only a handful of broadcasts can arrive
+MAX_REPLY_READS = 16
 
 _patched_cls = None
 
@@ -75,6 +95,25 @@ def patched_driver_class():
         # track how often the firmware balks (recovered refusals are
         # otherwise invisible above this class)
         last_upload_refused: bool = False
+
+        def _write_then_read(self, data):
+            # the reply to request (a, b) is report (a + 1, b) for every
+            # command this driver sends (0x30/0x32/0x36/0x38/0x74 families);
+            # anything else in the queue is a periodic status broadcast or a
+            # reply nobody waited for (e.g. to the write-only end-of-transfer
+            # report), and taking it as *this* reply desyncs the whole
+            # conversation — see the module docstring, item 3
+            self._write(data)
+            expected = bytes([data[0] + 1, data[1]])
+            for _ in range(MAX_REPLY_READS):
+                msg = self._read()
+                if bytes(msg[0:2]) == expected:
+                    return msg
+                log.debug("skipped report %02x%02x while waiting for %02x%02x",
+                          msg[0], msg[1], expected[0], expected[1])
+            raise ReplyMissing(
+                f"no reply to {data[0]:#04x} {data[1]:#04x} within "
+                f"{MAX_REPLY_READS} reports")
 
         def _switch_bucket(self, bucketIndex, mode=0x4):
             ok = super()._switch_bucket(bucketIndex, mode)

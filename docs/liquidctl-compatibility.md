@@ -1,8 +1,9 @@
 # liquidctl compatibility and the driver patch
 
 kraken-lcd's safe upload path (`kraken_lcd/driver_patch.py`) is a subclass
-of liquidctl's `KrakenZ3` driver that replaces one private method
-(`_send_data`) and calls eleven others. Private API can change in any
+of liquidctl's `KrakenZ3` driver that replaces two private methods
+(`_send_data`, `_write_then_read`), wraps two more (`_switch_bucket`,
+`_delete_all_buckets`) and calls the rest. Private API can change in any
 liquidctl release. This document describes how that risk is contained,
 what the current state is, and what to do when a liquidctl release
 changes something.

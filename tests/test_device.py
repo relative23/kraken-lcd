@@ -1,4 +1,5 @@
 import logging
+import types
 
 import pytest
 
@@ -16,10 +17,26 @@ from kraken_lcd.device import (
 _liquidctl_log = logging.getLogger("liquidctl.driver.kraken3")
 
 
-class FakeDriver:
-    description = "Fake NZXT Kraken"
+class FakeHidDevice:
+    """The driver's HID handle: an input-report queue the OS fills with the
+    device's periodic status broadcasts (about one per second)."""
 
     def __init__(self):
+        self.queued = 0
+        self.drains = 0
+
+    def clear_enqueued_reports(self):
+        self.queued = 0
+        self.drains += 1
+
+
+class FakeDriver:
+    description = "Fake NZXT Kraken"
+    # liquidctl's set_screen reads at most this many reports for its reply
+    MAX_READ_ATTEMPTS = 12
+
+    def __init__(self):
+        self.device = FakeHidDevice()
         self.calls = []
         self.fixed_speeds = []
         self.profiles = []
@@ -49,6 +66,10 @@ class FakeDriver:
                 ("Fan speed", 914, "rpm")]
 
     def set_screen(self, channel, mode, value):
+        # like liquidctl: the reply sits behind every stale report in the
+        # queue, and only MAX_READ_ATTEMPTS reports are looked at
+        assert self.device.queued < self.MAX_READ_ATTEMPTS, (
+            f"missing messages (attempts={self.MAX_READ_ATTEMPTS}, missing=1)")
         if self.fail_next > 0:
             self.fail_next -= 1
             raise OSError("simulated usb error")
@@ -398,6 +419,32 @@ def test_brightness_and_reset(device):
     dev.set_brightness(80)
     dev.reset_to_liquid()
     assert ("lcd", "brightness", "80") in driver.calls
+    assert ("lcd", "liquid", None) in driver.calls
+
+
+def test_stale_reports_are_drained_before_every_device_command(device, tmp_path, caplog):
+    # 40 s of periodic status broadcasts since the last status read: without
+    # the drain, liquidctl's set_screen gives up after 12 stale reports and
+    # the LCD reset at shutdown fails with "missing messages" (2026-09)
+    dev, driver = device
+    for command in (lambda: dev.reset_to_liquid(), lambda: dev.set_brightness(50),
+                    lambda: dev.show_gif(_gif(tmp_path)), lambda: dev.clear_image_memory()):
+        driver.device.queued = 40
+        command()
+        assert driver.device.queued == 0
+    assert driver.device.drains >= 4
+    assert ("lcd", "liquid", None) in driver.calls
+    assert ("lcd", "brightness", "50") in driver.calls
+    assert driver.calls[-1][:2] == ("lcd", "gif")
+    assert "missing messages" not in caplog.text
+
+
+def test_driver_without_a_report_queue_is_fine(device, tmp_path):
+    # e.g. a transport whose handle offers no clear_enqueued_reports()
+    dev, driver = device
+    driver.device = types.SimpleNamespace(queued=0)
+    dev.reset_to_liquid()
+    assert dev.show_gif(_gif(tmp_path)) is True
     assert ("lcd", "liquid", None) in driver.calls
 
 

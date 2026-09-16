@@ -321,9 +321,32 @@ class KrakenDevice:
 
     # --------------------------------------------------------------- control
 
+    def _drain_reports(self) -> None:
+        """Discard the input reports queued for our handle.
+
+        The device broadcasts a status report about once per second; hidraw
+        queues up to 64 of them. liquidctl clears that queue before a status
+        read but not before ``set_screen``, which then reads at most 12
+        reports looking for its reply — so any ``set_screen`` more than
+        ~11 s after the last status read fails with "missing messages".
+        Seen at every service stop that came mid-wait (2026-09). The bucket
+        commands of an upload read exactly one report per command and are
+        thrown off by a stale report just the same, so every device command
+        this layer issues drains the queue first.
+        """
+        clear = getattr(getattr(self._driver, "device", None),
+                        "clear_enqueued_reports", None)
+        if clear is None:
+            return
+        try:
+            clear()
+        except Exception as exc:
+            log.debug("clearing queued reports failed: %s", exc)
+
     def set_brightness(self, percent: int) -> None:
         if self._driver is None:
             raise DeviceError("not connected")
+        self._drain_reports()
         try:
             self._driver.set_screen("lcd", "brightness", str(int(percent)))
         except Exception as exc:
@@ -334,6 +357,7 @@ class KrakenDevice:
         if self._driver is None:
             return
         self._displayed = None
+        self._drain_reports()
         try:
             self._driver.set_screen("lcd", "liquid", None)
             log.info("LCD reset to the built-in liquid screen")
@@ -450,6 +474,7 @@ class KrakenDevice:
         watcher = _DriverErrorWatcher()
         liquidctl_logger = logging.getLogger("liquidctl")
         liquidctl_logger.addHandler(watcher)
+        self._drain_reports()
         try:
             self._driver.set_screen("lcd", "gif", str(path))
         except BucketSetupRefused as exc:
@@ -474,6 +499,7 @@ class KrakenDevice:
         visible flash. ``full=True`` (or the stock driver) clears every
         bucket, which briefly switches the LCD to the firmware liquid view.
         """
+        self._drain_reports()
         if not full:
             soft = getattr(self._driver, "soft_clear_inactive", None)
             if soft is not None:

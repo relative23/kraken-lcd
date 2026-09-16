@@ -8,7 +8,13 @@ offsets) runs for real.
 
 import pytest
 
-from kraken_lcd.driver_patch import BucketSetupRefused, find_patched_kraken, patched_driver_class
+from kraken_lcd.driver_patch import (
+    MAX_REPLY_READS,
+    BucketSetupRefused,
+    ReplyMissing,
+    find_patched_kraken,
+    patched_driver_class,
+)
 
 # The patch deliberately stands down on liquidctl versions that do not
 # satisfy the upstream contract (kraken_lcd.upstream). When that happens —
@@ -198,6 +204,58 @@ def test_real_delete_all_buckets_resets_tracking():
     driver._delete_all_buckets()
     assert driver._active_bucket is None
     assert deleted == list(range(16))
+
+
+def _report(prefix, byte14=0x1):
+    msg = [0] * 64
+    msg[0], msg[1] = prefix
+    msg[14] = byte14
+    return msg
+
+
+def _reading_driver(queue):
+    """Patched driver whose transport is a scripted input-report queue."""
+    driver = object.__new__(patched_driver_class())
+    driver.writes = []
+    driver._write = driver.writes.append
+    driver._read = lambda: queue.pop(0)
+    return driver
+
+
+def test_write_then_read_returns_the_matching_reply():
+    driver = _reading_driver([_report((0x31, 0x04))])
+    reply = driver._write_then_read([0x30, 0x04, 3])
+    assert reply[:2] == [0x31, 0x04]
+    assert driver.writes == [[0x30, 0x04, 3]]
+
+
+def test_write_then_read_skips_status_broadcasts_and_stale_replies():
+    # a periodic status broadcast (0x75 0x02) and the reply to the write-only
+    # end-of-transfer report (0x37 0x02) sit in the queue before the reply
+    # to the bucket switch; stock liquidctl would return the broadcast
+    queue = [_report((0x75, 0x02)), _report((0x37, 0x02)), _report((0x39, 0x01))]
+    driver = _reading_driver(queue)
+    reply = driver._write_then_read([0x38, 0x01, 0x04, 0])
+    assert reply[:2] == [0x39, 0x01]
+    assert queue == []
+
+
+def test_write_then_read_raises_when_the_reply_never_comes():
+    queue = [_report((0x75, 0x02))] * (MAX_REPLY_READS + 5)
+    driver = _reading_driver(queue)
+    with pytest.raises(ReplyMissing, match="0x38 0x01"):
+        driver._write_then_read([0x38, 0x01, 0x04, 0])
+    assert len(queue) == 5  # read budget respected, nothing beyond it consumed
+
+
+def test_real_switch_bucket_ignores_a_broadcast_in_front_of_its_reply():
+    # the actual patched _switch_bucket on top of the actual patched
+    # _write_then_read: the broadcast (byte 14 == 1 as well!) must not be
+    # taken as the switch confirmation
+    refused = _report((0x39, 0x01), byte14=0x0)
+    driver = _reading_driver([_report((0x75, 0x02)), refused])
+    assert driver._switch_bucket(5) is False
+    assert driver._active_bucket is None
 
 
 def test_find_patched_kraken_returns_none_without_hardware(monkeypatch):

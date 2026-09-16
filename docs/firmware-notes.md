@@ -16,6 +16,39 @@ device is 1.2.1 → 1.2.8 (2025-10-06) and 1.2.8 → 1.2.12 (2026-03-27);
 the bootloader reports 0.2.0. CAM evidently reads the patch level through
 another command. When the exact version matters, take it from CAM.
 
+## Status broadcasts and the reply stream
+
+The device sends an unsolicited status report (`0x75 0x02`, same layout
+as the reply to the status request) about once per second, from the
+moment `initialize()` has set the update interval. Two consequences,
+both verified with a passive `hidraw` capture on 2026-09-16:
+
+- **hidraw queues these reports** (64 deep, per open handle). liquidctl
+  clears the queue before a status read but not before `set_screen`,
+  which then looks at no more than 12 reports for its reply. So any
+  `set_screen` issued more than ~11 s after the last status read fails
+  with `missing messages (attempts=12, missing=1)` — the reply is there,
+  behind the stale broadcasts. That is why the LCD reset at service stop
+  failed whenever the stop came mid-wait. kraken-lcd drains the queue
+  before every command it issues (1.3.3).
+- **One report per command is not a protocol.** `_write_then_read`
+  returns the next report, whatever it is. A broadcast that arrives
+  between two commands is taken as the reply to the second one, and every
+  reply after that is attributed to the previous command: the bucket
+  table comes back shifted by one entry, the delete/setup/switch checks
+  still pass (byte 14 is `0x1` in all of those replies as well as in the
+  broadcast) and the upload's memory offset is computed from the wrong
+  entries. Captured live: a broadcast landed between the LCD-info reply
+  and the `0x36 0x03` request, the upload went through "successfully".
+  The device answers request `(a, b)` with report `(a + 1, b)` for every
+  command in the upload path (`0x30 0x04` → `0x31 0x04`, `0x32 0x01` →
+  `0x33 0x01`, `0x36 0x03` → `0x37 0x03`, `0x38 0x01` → `0x39 0x01`, …),
+  so the patched driver reads until the matching reply instead (1.3.3).
+
+Whether the sporadic setup refusals below are this desync in disguise —
+an offset computed from a shifted table that the firmware then rejects —
+is the obvious hypothesis; the refusal rate after 1.3.3 will tell.
+
 ## Image buckets
 
 The LCD firmware stores images in 16 "buckets" inside a shared image

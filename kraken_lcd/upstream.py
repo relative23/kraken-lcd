@@ -76,7 +76,8 @@ CONTRACT: tuple[Internal, ...] = (
              "called for the header and every data chunk"),
     Internal("_write", "(self, data)", "0ca907059fac", "called for the end-of-transfer report"),
     Internal("_write_then_read", "(self, data)", "47c5382899bf",
-             "called for the start-of-transfer handshake"),
+             "overridden: reads until the matching reply instead of taking the "
+             "next report; every bucket command above goes through it"),
 )
 
 
