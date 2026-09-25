@@ -148,3 +148,29 @@ def test_absolute_assets_dir_is_kept(tmp_path):
     (tmp_path / "config.toml").write_text('[render]\nassets_dir = "/opt/gifs"\n')
     cfg = load_config(None, tmp_path)
     assert str(cfg.assets_dir) == "/opt/gifs"
+
+
+def test_face_screens_and_their_options(tmp_path):
+    (tmp_path / "config.toml").write_text(
+        '[carousel]\nscreens = ["cockpit", "alarm", "night", "liquid"]\n'
+        '[render]\nlanguage = "de"\n'
+        '[screens.alarm]\nthreshold = 85\n'
+        '[screens.night]\nhours = [23, 6]\n')
+    cfg = load_config(None, tmp_path)
+    assert cfg.carousel.screens == ("cockpit", "alarm", "night", "liquid")
+    assert cfg.render.language == "de"
+    assert cfg.screen_styles["alarm"].threshold == 85.0
+    assert cfg.screen_styles["night"].hours == (23, 6)
+
+
+@pytest.mark.parametrize("snippet", [
+    '[render]\nlanguage = "fr"\n',
+    '[screens.alarm]\nthreshold = 10\n',
+    '[screens.night]\nhours = [22]\n',
+    '[screens.night]\nhours = [7, 7]\n',
+    '[screens.night]\nhours = [22, 24]\n',
+])
+def test_face_options_are_validated(tmp_path, snippet):
+    (tmp_path / "config.toml").write_text(snippet)
+    with pytest.raises(ConfigError):
+        load_config(None, tmp_path)

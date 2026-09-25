@@ -13,7 +13,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .config import CacheConfig, RenderConfig, ScreenStyle
+from .config import FACE_SCREENS, CacheConfig, RenderConfig, ScreenStyle
+from .elements import TextElement
 from .sensors import SensorSnapshot
 
 # bump when FONT_ROLES or the anchors change, so stale cached tiles
@@ -35,25 +36,16 @@ _SINGLE_VALUE_Y = 0.5 + 60 / 640
 _DUAL_LABEL_Y = 0.5 - 75 / 640
 _DUAL_VALUE_Y = 0.5 + 40 / 640
 
-WHITE = (255, 255, 255)
-
-
-@dataclass(frozen=True)
-class TextElement:
-    text: str
-    role: str   # key into FONT_ROLES
-    cx: float   # text center, fraction of canvas width
-    cy: float   # text center, fraction of canvas height
-    color: tuple[int, int, int] = WHITE
 
 
 @dataclass(frozen=True)
 class Screen:
     name: str
-    background: str  # file name inside the assets directory
+    background: str  # file name inside the assets directory ("" = none)
     build: Callable[[SensorSnapshot, CacheConfig], tuple[TextElement, ...] | None]
     colors: int | None = None       # per-tile palette override
     max_frames: int | None = None   # per-tile frame-cap override
+    face: object | None = None      # a kraken_lcd.faces.Face for face screens
 
 
 def effective_render_config(screen: Screen, render_cfg: RenderConfig) -> RenderConfig:
@@ -86,7 +78,7 @@ _SINGLE_TILES: dict[str, tuple[str, str, Callable, Callable]] = {
     "liquid": ("liquid.gif", "Liquid", lambda s: s.liquid_temp, _fmt_temp),
     "cpu": ("cpu.gif", "CPU", lambda s: s.cpu_load, _fmt_load),
     "gpu": ("gpu.gif", "GPU", lambda s: s.gpu_load, _fmt_load),
-    "ram": ("cpu.gif", "RAM", lambda s: s.ram_percent, _fmt_load),
+    "ram": ("ram.gif", "RAM", lambda s: s.ram_percent, _fmt_load),
     "nvme": ("gpu.gif", "SSD", lambda s: s.nvme_temp, _fmt_temp),
     "pump": ("liquid.gif", "Pump rpm", lambda s: s.pump_rpm, _fmt_rpm),
     "fan": ("liquid.gif", "Fan rpm", lambda s: s.fan_rpm, _fmt_rpm),
@@ -134,12 +126,28 @@ def _make_temps(style: ScreenStyle) -> Screen:
                   colors=style.colors, max_frames=style.max_frames)
 
 
-def build_screens(styles: Mapping[str, ScreenStyle]) -> dict[str, Screen]:
+def _make_face(name: str, style: ScreenStyle, language: str) -> Screen:
+    from . import faces  # imported here: faces builds on this module
+
+    face = faces.FACES[name]
+    context = faces.FaceContext(language=language, threshold=style.threshold, hours=style.hours)
+
+    def build(snap: SensorSnapshot, rounding: CacheConfig):
+        values = face.values(snap, context)
+        return None if values is None else faces.encode(values)
+
+    return Screen(name, face.background or "", build,
+                  colors=style.colors, max_frames=style.max_frames, face=face)
+
+
+def build_screens(styles: Mapping[str, ScreenStyle], language: str = "en") -> dict[str, Screen]:
     """All screens, with per-tile config overrides applied."""
     default = ScreenStyle()
     screens = {name: _make_single(name, styles.get(name, default))
                for name in _SINGLE_TILES}
     screens["temps"] = _make_temps(styles.get("temps", default))
+    for name in FACE_SCREENS:
+        screens[name] = _make_face(name, styles.get(name, default), language)
     return screens
 
 

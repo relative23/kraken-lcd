@@ -84,13 +84,8 @@ def _save_quantized(frames: list[Image.Image], durations: list[int],
 def render_gif(background: Path, elements: tuple[TextElement, ...],
                out_path: Path, cfg: RenderConfig,
                budget_bytes: int | None = None) -> None:
-    """Render *background* with burned-in *elements* to *out_path*.
-
-    When the result exceeds *budget_bytes*, frames are progressively thinned
-    (durations stretched so the animation keeps its timing) and the palette
-    shrunk until it fits. The output is written atomically (temp file +
-    rename) so a reader can never observe a half-written GIF.
-    """
+    """Render *background* with burned-in *elements* to *out_path*
+    (budget and atomic write: see ``save_frames``)."""
     frames: list[Image.Image] = []
     durations: list[int] = []
     with Image.open(background) as src:
@@ -106,7 +101,18 @@ def render_gif(background: Path, elements: tuple[TextElement, ...],
                 break
     if not frames:
         raise ValueError(f"{background} contains no frames")
+    save_frames(frames, durations, out_path, cfg, budget_bytes)
 
+
+def save_frames(frames: list[Image.Image], durations: list[int], out_path: Path,
+                cfg: RenderConfig, budget_bytes: int | None = None) -> None:
+    """Quantize RGB *frames* to a GIF at *out_path* within *budget_bytes*.
+
+    When the result exceeds the budget, frames are progressively thinned
+    (durations stretched so the animation keeps its timing) and the palette
+    shrunk until it fits. The output is written atomically (temp file +
+    rename) so a reader can never observe a half-written GIF.
+    """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = out_path.with_name(out_path.name + ".tmp")
     attempts = ((1, cfg.colors), (2, cfg.colors),
@@ -129,3 +135,17 @@ def render_gif(background: Path, elements: tuple[TextElement, ...],
         os.replace(tmp_path, out_path)
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+def render_screen(screen, elements: tuple[TextElement, ...], background: Path | None,
+                  out_path: Path, cfg: RenderConfig, budget_bytes: int | None,
+                  assets_dir: Path) -> None:
+    """Render one carousel screen: a face with its own frames, or a tile
+    (background GIF with burned-in text)."""
+    if screen.face is not None:
+        from .faces import FaceContext, render_face  # faces builds on this module
+
+        context = FaceContext(size=cfg.size, assets_dir=assets_dir, language=cfg.language)
+        render_face(screen.face, elements, out_path, cfg, context, budget_bytes)
+    else:
+        render_gif(background, elements, out_path, cfg, budget_bytes=budget_bytes)

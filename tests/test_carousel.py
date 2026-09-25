@@ -92,7 +92,7 @@ class FakeNotifier:
 
 
 class FakeSensors:
-    def snapshot(self, liquid_temp=None, pump_rpm=None, fan_rpm=None):
+    def snapshot(self, liquid_temp=None, pump_rpm=None, fan_rpm=None, detailed=False):
         return SensorSnapshot(cpu_load=42.0, cpu_temp=60.5,
                               gpu_load=None, gpu_temp=None,
                               liquid_temp=liquid_temp,
@@ -424,14 +424,14 @@ def test_signal_handlers_installed(cfg):
 
 def test_prerender_avoids_duplicate_renders(cfg, monkeypatch):
     from kraken_lcd import carousel as carousel_mod
-    real_render = carousel_mod.render_gif
+    real_render = carousel_mod.render_screen
     renders = []
 
-    def counting_render(background, elements, out, render_cfg, **kwargs):
+    def counting_render(screen, elements, background, out, *args):
         renders.append(out)
-        return real_render(background, elements, out, render_cfg, **kwargs)
+        return real_render(screen, elements, background, out, *args)
 
-    monkeypatch.setattr(carousel_mod, "render_gif", counting_render)
+    monkeypatch.setattr(carousel_mod, "render_screen", counting_render)
     device = FakeDevice()
     carousel = _carousel(cfg, device)
     carousel._one_cycle()

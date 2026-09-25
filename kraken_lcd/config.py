@@ -12,7 +12,12 @@ log = logging.getLogger(__name__)
 # in the past (bootloader incident) — the floor cannot be lowered via config.
 MIN_DISPLAY_SECONDS = 5.0
 
-KNOWN_SCREENS = ("liquid", "cpu", "gpu", "temps", "ram", "nvme", "pump", "fan")
+TILE_SCREENS = ("liquid", "cpu", "gpu", "temps", "ram", "nvme", "pump", "fan")
+# full-screen layouts with their own animation (kraken_lcd/faces)
+FACE_SCREENS = ("cockpit", "helm", "orbit", "duo", "history", "fire", "caustics", "video",
+                "clock", "music", "alarm", "night")
+KNOWN_SCREENS = TILE_SCREENS + FACE_SCREENS
+LANGUAGES = ("en", "de")
 
 # duty is int 0..100; a curve is a tuple of (liquid °C, duty %) points
 SpeedSetting = int | tuple[tuple[float, int], ...] | None
@@ -20,7 +25,7 @@ SpeedSetting = int | tuple[tuple[float, int], ...] | None
 # None marks sections with their own nested validation
 _ALLOWED_KEYS: dict[str, set[str] | None] = {
     "carousel": {"display_seconds", "brightness", "screens"},
-    "render": {"size", "max_frames", "colors", "font_scale", "assets_dir"},
+    "render": {"size", "max_frames", "colors", "font_scale", "assets_dir", "language"},
     "cache": {"dir", "max_megabytes", "round_temp_to", "round_load_to", "round_rpm_to"},
     "device": {"max_upload_megabytes", "upload_retries",
                "image_memory_megabytes", "driver_patch"},
@@ -29,7 +34,8 @@ _ALLOWED_KEYS: dict[str, set[str] | None] = {
 }
 
 _SCREEN_STYLE_KEYS = {"label", "background", "color", "label_y", "value_y",
-                      "left_label", "right_label", "colors", "max_frames"}
+                      "left_label", "right_label", "colors", "max_frames",
+                      "threshold", "hours"}
 
 
 class ConfigError(Exception):
@@ -53,6 +59,7 @@ class RenderConfig:
     colors: int = 64
     font_scale: float = 1.0
     assets_dir: Path = Path("assets")
+    language: str = "en"  # words on the face screens: "en" or "de"
 
 
 @dataclass(frozen=True)
@@ -91,6 +98,8 @@ class ScreenStyle:
     right_label: str | None = None  # dual tile (temps) only
     colors: int | None = None       # per-tile palette size (file-size tuning)
     max_frames: int | None = None   # per-tile frame cap (file-size tuning)
+    threshold: float | None = None  # alarm face: degrees C that trigger it
+    hours: tuple[int, int] | None = None  # night face: start and end hour
 
 
 @dataclass(frozen=True)
@@ -223,6 +232,18 @@ def _parse_screen_styles(data: dict) -> dict[str, ScreenStyle]:
             tile_max_frames = _int(entries, "max_frames", 0, where)
             _require(tile_max_frames >= 1,
                      f"{where}.max_frames must be at least 1")
+        threshold = None
+        if "threshold" in entries:
+            threshold = _num(entries, "threshold", 0.0, where)
+            _require(30 <= threshold <= 120, f"{where}.threshold must be between 30 and 120")
+        hours = None
+        if "hours" in entries:
+            raw = entries["hours"]
+            _require(isinstance(raw, list) and len(raw) == 2
+                     and all(isinstance(h, int) and not isinstance(h, bool) and 0 <= h <= 23
+                             for h in raw) and raw[0] != raw[1],
+                     f"{where}.hours must be [start, end] hours 0-23, e.g. [22, 7]")
+            hours = (raw[0], raw[1])
         styles[name] = ScreenStyle(
             label=_optional_text(entries, "label", where),
             background=_optional_text(entries, "background", where),
@@ -233,6 +254,8 @@ def _parse_screen_styles(data: dict) -> dict[str, ScreenStyle]:
             right_label=_optional_text(entries, "right_label", where),
             colors=tile_colors,
             max_frames=tile_max_frames,
+            threshold=threshold,
+            hours=hours,
         )
     return styles
 
@@ -307,6 +330,8 @@ def load_config(path: Path | None, base_dir: Path) -> Config:
     _require(2 <= colors <= 256, "render.colors must be between 2 and 256")
     font_scale = _num(ren, "font_scale", 1.0, "render")
     _require(0.5 <= font_scale <= 3.0, "render.font_scale must be between 0.5 and 3.0")
+    language = ren.get("language", "en")
+    _require(language in LANGUAGES, f"render.language must be one of {list(LANGUAGES)}")
 
     max_megabytes = _num(cac, "max_megabytes", 50.0, "cache")
     _require(max_megabytes > 0, "cache.max_megabytes must be positive")
@@ -336,6 +361,7 @@ def load_config(path: Path | None, base_dir: Path) -> Config:
             colors=colors,
             font_scale=font_scale,
             assets_dir=Path(str(ren.get("assets_dir", "assets"))),
+            language=language,
         ),
         cache=CacheConfig(
             dir=Path(str(cac.get("dir", "/var/cache/kraken-lcd"))),

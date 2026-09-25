@@ -15,8 +15,14 @@ display_seconds = 20        # per-tile display time (safety floor: 5).
                             # A single tile with unchanged values is not
                             # re-uploaded at all.
 brightness = 100            # LCD brightness applied at startup (0-100)
-# Available tiles: liquid, cpu, gpu, temps, ram, nvme, pump, fan
-# Order = display order; omit a tile to disable it.
+# Available screens, shown in this order; omit one to disable it.
+#   tiles (label and value over an animated background):
+#     liquid, cpu, gpu, temps, ram, nvme, pump, fan
+#   faces (full layouts with many values and their own animation):
+#     cockpit, helm, orbit, duo, history, fire, caustics, video, clock,
+#     music, alarm, night
+#   alarm appears only while the CPU or GPU is at its threshold or above,
+#   night only during its hours; music shows an example track for now.
 screens = ["liquid", "cpu", "gpu", "temps"]
 
 [render]
@@ -25,6 +31,7 @@ max_frames = 30             # frame cap per GIF (smaller = more stable uploads)
 colors = 64                 # palette size (smaller file = safer upload)
 font_scale = 1.0            # scale all text (0.5-3.0), e.g. 1.2 = 20% larger
 assets_dir = "assets"       # background GIFs (relative to the install dir)
+language = "en"             # words on the face screens: "en" or "de"
 
 [cache]
 dir = "/var/cache/kraken-lcd"
@@ -62,3 +69,7 @@ driver_patch = true         # patched KrakenZ3 driver: verified bucket setup +
 # [screens.temps]
 # left_label = "CPU"
 # right_label = "GPU"
+# [screens.alarm]
+# threshold = 90            # degrees C at which the alarm face appears
+# [screens.night]
+# hours = [22, 7]           # the night face shows from 22:00 until 07:00

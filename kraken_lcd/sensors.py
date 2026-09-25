@@ -8,7 +8,8 @@ to ``None`` on failure — a dead sensor must never take the carousel down.
 import glob
 import logging
 import subprocess
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 
 import psutil
 
@@ -19,6 +20,12 @@ NVIDIA_SMI_CMD = (
     "--query-gpu=temperature.gpu,utilization.gpu",
     "--format=csv,noheader,nounits",
 )
+NVIDIA_SMI_DETAIL_CMD = (
+    "nvidia-smi",
+    "--query-gpu=memory.used,power.draw",
+    "--format=csv,noheader,nounits",
+)
+GIB = 1024 ** 3
 
 
 @dataclass(frozen=True)
@@ -32,6 +39,15 @@ class SensorSnapshot:
     liquid_temp: float | None = None
     pump_rpm: int | None = None
     fan_rpm: int | None = None
+    # detailed values, read only for screens that show them
+    cpu_core_loads: tuple[float, ...] | None = None
+    cpu_freq_ghz: float | None = None
+    ram_used_gb: float | None = None
+    ram_total_gb: float | None = None
+    gpu_mem_used_gb: float | None = None
+    gpu_power_w: float | None = None
+    # recent values per series, oldest first (see history.py)
+    history: Mapping[str, tuple[float, ...]] | None = None
 
 
 class SensorReader:
@@ -46,10 +62,11 @@ class SensorReader:
 
     def snapshot(self, liquid_temp: float | None = None,
                  pump_rpm: int | None = None,
-                 fan_rpm: int | None = None) -> SensorSnapshot:
+                 fan_rpm: int | None = None,
+                 detailed: bool = False) -> SensorSnapshot:
         temperatures = self._read_temperatures()
         gpu_temp, gpu_load = self._read_gpu(temperatures)
-        return SensorSnapshot(
+        basic = SensorSnapshot(
             cpu_load=self._read_cpu_load(),
             cpu_temp=self._read_cpu_temp(temperatures),
             gpu_load=gpu_load,
@@ -60,6 +77,55 @@ class SensorReader:
             pump_rpm=pump_rpm,
             fan_rpm=fan_rpm,
         )
+        return self._add_details(basic) if detailed else basic
+
+    def _add_details(self, snap: SensorSnapshot) -> SensorSnapshot:
+        """Per-core load, clock, memory in GB, VRAM and GPU power."""
+        details: dict = {}
+        try:
+            # load per core since the previous call (the carousel calls
+            # about once per tile), no extra blocking wait
+            details["cpu_core_loads"] = tuple(
+                float(v) for v in psutil.cpu_percent(interval=None, percpu=True))
+        except Exception as exc:
+            log.debug("per-core load unavailable: %s", exc)
+        try:
+            freq = psutil.cpu_freq()
+            if freq and freq.current:
+                details["cpu_freq_ghz"] = float(freq.current) / 1000
+        except Exception as exc:
+            log.debug("CPU clock unavailable: %s", exc)
+        try:
+            memory = psutil.virtual_memory()
+            details["ram_used_gb"] = float(memory.total - memory.available) / GIB
+            details["ram_total_gb"] = float(memory.total) / GIB
+        except Exception as exc:
+            log.debug("memory size unavailable: %s", exc)
+        vram, power = self._read_gpu_details()
+        details["gpu_mem_used_gb"], details["gpu_power_w"] = vram, power
+        return replace(snap, **details)
+
+    def _read_gpu_details(self) -> tuple[float | None, float | None]:
+        """(VRAM in use GB, power W): nvidia-smi, then amdgpu sysfs."""
+        if not self._no_nvidia:
+            try:
+                result = subprocess.run(NVIDIA_SMI_DETAIL_CMD, capture_output=True,
+                                        text=True, timeout=5, check=True)
+                mem_s, power_s = (p.strip() for p in
+                                  result.stdout.strip().splitlines()[0].split(","))
+                return _number(mem_s, 1 / 1024), _number(power_s, 1.0)
+            except FileNotFoundError:
+                self._no_nvidia = True
+            except Exception as exc:
+                log.debug("nvidia-smi details unavailable: %s", exc)
+        vram = power = None
+        for path in sorted(glob.glob("/sys/class/drm/card*/device/mem_info_vram_used")):
+            vram = _read_number(path, 1 / GIB)
+            break
+        for path in sorted(glob.glob("/sys/class/drm/card*/device/hwmon/hwmon*/power1_average")):
+            power = _read_number(path, 1e-6)  # microwatts
+            break
+        return vram, power
 
     @staticmethod
     def _read_temperatures() -> dict:
@@ -156,3 +222,18 @@ class SensorReader:
             except (OSError, ValueError):
                 continue
         return temp, load
+
+
+def _number(text: str, scale: float) -> float | None:
+    try:
+        return float(text) * scale
+    except ValueError:  # "[N/A]" and similar
+        return None
+
+
+def _read_number(path: str, scale: float) -> float | None:
+    try:
+        with open(path) as fh:
+            return _number(fh.read().strip(), scale)
+    except OSError:
+        return None

@@ -20,7 +20,8 @@ from .device import (
     DeviceUnsupported,
     KrakenDevice,
 )
-from .render import render_gif
+from .history import History
+from .render import render_screen
 from .screens import build_screens, effective_render_config
 from .sensors import SensorReader
 
@@ -108,8 +109,11 @@ def cmd_render(args: argparse.Namespace) -> int:
     cfg = _load(args)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    snap = SensorReader().snapshot(liquid_temp=args.liquid)
-    screens = build_screens(cfg.screen_styles)
+    reader = SensorReader()
+    snap = reader.snapshot(liquid_temp=args.liquid)
+    detailed = replace(reader.snapshot(liquid_temp=args.liquid, detailed=True),
+                       history=History(cfg.cache.dir / "history.json").series())
+    screens = build_screens(cfg.screen_styles, cfg.render.language)
     base_render = cfg.render
     if base_render.size == 0:  # auto-detect needs a device; use the default
         base_render = replace(base_render, size=DEFAULT_RENDER_SIZE)
@@ -118,15 +122,20 @@ def cmd_render(args: argparse.Namespace) -> int:
     rendered = 0
     for name in cfg.carousel.screens:
         screen = screens[name]
-        elements = screen.build(snap, cfg.cache)
+        elements = screen.build(detailed if screen.face is not None else snap, cfg.cache)
         if elements is None:
-            print(f"{name}: skipped (required sensor unavailable"
-                  + (", use --liquid for the liquid tile)" if name == "liquid" else ")"))
+            if screen.face is not None:
+                print(f"{name}: skipped (nothing to show now: no data yet, "
+                      "or its condition does not apply)")
+            else:
+                print(f"{name}: skipped (required sensor unavailable"
+                      + (", use --liquid for the liquid tile)" if name == "liquid" else ")"))
             continue
         out = out_dir / f"{name}.gif"
         budget = int(cfg.device.max_upload_megabytes * 1024 * 1024)
-        render_gif(cfg.assets_dir / screen.background, elements, out,
-                   effective_render_config(screen, base_render), budget_bytes=budget)
+        background = cfg.assets_dir / screen.background if screen.background else None
+        render_screen(screen, elements, background, out,
+                      effective_render_config(screen, base_render), budget, cfg.assets_dir)
         print(f"{name}: {out} ({out.stat().st_size / 2**20:.2f} MB)")
         rendered += 1
     return 0 if rendered else 1

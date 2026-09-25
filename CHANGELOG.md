@@ -4,6 +4,93 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] – 2026-09-25
+
+The screens of the 2.0 design concept, on the 1.x daemon: twelve faces
+next to the eight tiles, new backgrounds for all of them, and the roadmap
+to 2.0 in `docs/ROADMAP.md`. Nothing changed in the device layer.
+
+### Added
+
+- **Twelve face screens** (`kraken_lcd/faces/`), each a full layout with
+  many values and an animation that shows no invented data: light sweeps
+  along gauges, a scan light over the core bars, sparks and a reading
+  cursor along charts, a turning dial, a spinning record, a blinking clock
+  colon. `cockpit`, `helm` (the cockpit's values around the rim of the
+  round display, one bar per core, temperatures and loads colored by
+  heat), `orbit`, `duo`, `history`, `fire` and `caustics` (the new
+  backgrounds with secondary values), `video`, `clock`, `music`
+  (an example track until a user-session helper can read the media
+  player), `alarm` (appears only while the CPU or GPU is at
+  `[screens.alarm] threshold`, default 90 °C) and `night` (only during
+  `[screens.night] hours`, default 22 to 7). They go into
+  `carousel.screens` like tiles and share the upload path, budget and
+  cache: a face is re-rendered only when something it shows changed.
+  Measured at 640 px with live values: 0.01 to 0.90 MB per upload.
+  The cockpit layout is inspired by the dashboard that lukas-shawford
+  runs on the same cooler, shown in his video in
+  [liquidctl#774](https://github.com/liquidctl/liquidctl/issues/774#issuecomment-5707870902).
+- `render.language` (`"en"` or `"de"`) for the words on the faces.
+- Detailed sensor values for the faces: load per core, CPU clock, RAM and
+  VRAM in GB, GPU power (nvidia-smi or amdgpu sysfs). Read only when a
+  face is shown; tiles measure exactly as before.
+- A 24-hour history of liquid temperature, CPU and GPU load and CPU
+  temperature (one point per minute at most, `history.json` next to the
+  render cache) for the charts.
+- `assets/video.gif`, an evening landscape loop behind the video face,
+  and the fonts the faces use (Barlow, Barlow Condensed, IBM Plex Mono;
+  SIL Open Font License, texts in `assets/fonts/`).
+
+### Changed
+
+- **New default backgrounds**, one technique per scene, all laid out for
+  the round LCD and looping seamlessly:
+  - `liquid.gif`: pool-floor caustics. A looping wave spectrum refracts
+    a dense grid of light rays; their density on the floor is the
+    caustic brightness.
+  - `cpu.gif`: a ring of fire. The value sits on the dark hearth
+    (radius 0.36 of the width; the renderer draws "100%" out to 0.347, so
+    the value never touches the flames). Flames are built like a fire
+    shader and made to loop: periodic noise morphs around a circle and
+    scrolls outward by whole periods, a second noise bends the tongues,
+    a threshold growing with height tapers them; sparks rise and wink
+    out before they wrap; embers glow on the hearth's rim.
+  - `ram.gif`: a memory die on a dark board. Copper traces bend at 45
+    degrees from the rim to pads on the die; data pulses run along them
+    in and out, whole traces per loop, with a flash where they arrive.
+    The RAM tile had shared `cpu.gif` before.
+  - `gpu.gif`: a wireframe geodesic sphere spinning a fifth of a turn
+    per loop, which brings it back onto itself.
+  - `temp.gif`: a plasma globe. Its core sits between the two values.
+
+  Ramp palettes are interpolated in OKLab, with an ordered dither on the
+  pixels that stay still; the fire, the die and the lake get a palette
+  fitted to their frames (k-means in OKLab) and an ordered dither that
+  stays in place. Parts that do not move (disc, backdrop, the
+  corners outside the round display) cost almost nothing in the GIF, so
+  every tile is smaller than before. Measured with the renderer at 640
+  px, the development host's per-tile settings and the same sensor
+  values:
+
+  | tile | before | after |
+  |---|---|---|
+  | liquid, pump, fan | 1.14 MB | 0.69–0.71 MB |
+  | cpu | 1.39 MB | 1.12 MB |
+  | ram | 1.39 MB | 0.74 MB |
+  | gpu, nvme | 1.27–1.29 MB | 1.05–1.06 MB |
+  | temps | 1.12 MB | 0.67 MB |
+  | all eight | 9.89 MB | 6.72 MB |
+
+  Rendered tiles keep the same GIF layout (GIF89a, one 64-color global
+  palette, transparent delta frames, disposal 0). The difference: most
+  delta frames now cover only the region that changed instead of the
+  full 640 × 640.
+- `scripts/generate_backgrounds.py` needs numpy (the daemon does not);
+  each scene is its own module in `scripts/backgrounds/`, rendered either
+  onto a color ramp or in true color with a fitted palette. It keeps 20 frames per GIF, so a tile with a
+  lowered `max_frames` still gets the whole loop (the development host
+  runs liquid, pump and fan at 20).
+
 ## [1.3.3] – 2026-09-16
 
 The device's periodic status broadcast (`0x75 0x02`, about one per

@@ -9,7 +9,8 @@ from dataclasses import replace
 from .cache import RenderCache
 from .config import Config
 from .device import DeviceError, DeviceInBootloader, DeviceUnsupported, KrakenDevice
-from .render import render_gif
+from .history import History
+from .render import render_screen
 from .screens import Screen, build_screens, cache_key, effective_render_config
 from .sdnotify import SystemdNotifier
 from .sensors import SensorReader
@@ -43,7 +44,9 @@ class Carousel:
         self._device = device
         self._sensors = sensors
         self._cache = cache
-        self._screens = build_screens(cfg.screen_styles)
+        self._screens = build_screens(cfg.screen_styles, cfg.render.language)
+        # recent values for the chart screens, kept next to the render cache
+        self._history = History(cache.directory / "history.json")
         self._notifier = notifier or SystemdNotifier()
         self._stop = threading.Event()
         self._failures = 0
@@ -81,6 +84,7 @@ class Carousel:
             while not self._stop.is_set():
                 self._one_cycle()
         finally:
+            self._history.save()
             self._device.flush_upload_stats()
             self._device.reset_to_liquid()
             self._device.disconnect()
@@ -229,19 +233,24 @@ class Carousel:
         unavailable, (None, elements) when rendering failed.
         """
         status = self._device.read_status()
+        is_face = screen.face is not None
         snapshot = self._sensors.snapshot(liquid_temp=status.liquid_temp,
                                           pump_rpm=status.pump_rpm,
-                                          fan_rpm=status.fan_rpm)
+                                          fan_rpm=status.fan_rpm,
+                                          detailed=is_face)
+        self._history.record(snapshot)
+        if is_face:
+            snapshot = replace(snapshot, history=self._history.series())
         elements = screen.build(snapshot, self._cfg.cache)
         if elements is None:
             return None, None
-        background = self._cfg.assets_dir / screen.background
+        background = self._cfg.assets_dir / screen.background if screen.background else None
         render_cfg = effective_render_config(screen, self._render_cfg)
         budget = int(self._cfg.device.max_upload_megabytes * 1024 * 1024)
         key = cache_key(screen, elements, render_cfg, budget, background)
         path = self._cache.get_or_render(
-            key, lambda out: render_gif(background, elements, out,
-                                        render_cfg, budget_bytes=budget))
+            key, lambda out: render_screen(screen, elements, background, out, render_cfg,
+                                           budget, self._cfg.assets_dir))
         return path, elements
 
     def _show_screen(self, screen: Screen) -> bool:
@@ -261,8 +270,19 @@ class Carousel:
         if self._device.show_gif(path):
             self._failures = 0
             self._cooldowns = 0
-            log.info("tile %s: %s", screen.name,
-                     " ".join(e.text for e in elements))
+            log.info("tile %s: %s", screen.name, _summary(elements))
             return True
         self._failures += 1
         return False
+
+
+def _summary(elements) -> str:
+    """Log line for a shown screen: the tile's texts, or a face's plain
+    values (lists such as chart data are left out)."""
+    parts = []
+    for element in elements:
+        if element.role != "data":
+            parts.append(element.text)
+        elif "[" not in element.text and "lang=" not in element.text:
+            parts.append(element.text.replace('"', ""))
+    return " ".join(parts)
